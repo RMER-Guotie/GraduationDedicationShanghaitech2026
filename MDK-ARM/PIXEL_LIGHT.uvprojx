@@ -436,6 +436,21 @@
               <FileType>1</FileType>
               <FilePath>../Core/Src/stm32f1xx_hal_msp.c</FilePath>
             </File>
+            <File>
+              <FileName>ws2812_bsr_dma.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/ws2812_bsr_dma.c</FilePath>
+            </File>
+            <File>
+              <FileName>remote_input.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/remote_input.c</FilePath>
+            </File>
+            <File>
+              <FileName>white_pwm.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/white_pwm.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

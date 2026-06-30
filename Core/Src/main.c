@@ -28,6 +28,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "ws2812_bsr_dma.h"
+#include "remote_input.h"
+#include "white_pwm.h"
 
 /* USER CODE END Includes */
 
@@ -100,6 +103,9 @@ int main(void)
   MX_CAN_Init();
   MX_SPI2_Init();
   /* USER CODE BEGIN 2 */
+  WS2812_BSR_Init();
+  RemoteInput_Init();
+  WhitePwm_Init();
 
   /* USER CODE END 2 */
 
@@ -110,6 +116,10 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    RemoteInput_Poll(HAL_GetTick());
+    WhitePwm_Poll(HAL_GetTick());
+    WS2812_BSR_TestPatternStep(HAL_GetTick());
+    HAL_Delay(1);
   }
   /* USER CODE END 3 */
 }
