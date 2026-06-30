@@ -49,3 +49,4 @@ pixel_light\main.o: C:\Keil_v5\ARM\ARMCC\Bin\..\include\string.h
 pixel_light\main.o: ../Core/Inc/gpio.h
 pixel_light\main.o: ../Core/Inc/ws2812_bsr_dma.h
 pixel_light\main.o: ../Core/Inc/remote_input.h
+pixel_light\main.o: ../Core/Inc/white_pwm.h

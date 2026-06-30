@@ -1,5 +1,8 @@
 --cpu Cortex-M3
 "pixel_light\startup_stm32f103xb.o"
+"pixel_light\ws2812_bsr_dma.o"
+"pixel_light\remote_input.o"
+"pixel_light\white_pwm.o"
 "pixel_light\main.o"
 "pixel_light\gpio.o"
 "pixel_light\adc.o"
@@ -9,8 +12,6 @@
 "pixel_light\usart.o"
 "pixel_light\stm32f1xx_it.o"
 "pixel_light\stm32f1xx_hal_msp.o"
-"pixel_light\ws2812_bsr_dma.o"
-"pixel_light\remote_input.o"
 "pixel_light\usb_device.o"
 "pixel_light\usbd_desc.o"
 "pixel_light\usbd_cdc_if.o"
