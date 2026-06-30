@@ -8,6 +8,7 @@ extern TIM_HandleTypeDef htim1;
 #define WHITE_PWM_WW_TIM_CHANNEL  TIM_CHANNEL_1
 #define WHITE_PWM_CW_TIM_CHANNEL  TIM_CHANNEL_2
 
+/* Debug watch values mirror the internal target/current levels. */
 volatile uint16_t white_pwm_watch_ww_target;
 volatile uint16_t white_pwm_watch_cw_target;
 volatile uint16_t white_pwm_watch_ww_current;
@@ -26,6 +27,7 @@ static void WhitePwm_UpdateWatch(void);
 
 void WhitePwm_Init(void)
 {
+  /* Keep both channels off before enabling TIM1 PWM outputs. */
   white_pwm_ww_target = 0U;
   white_pwm_cw_target = 0U;
   white_pwm_ww_current = 0U;
@@ -43,6 +45,7 @@ void WhitePwm_Poll(uint32_t now_ms)
 {
   uint8_t changed = 0U;
 
+  /* Smoothing is time-sliced so callers can poll from the main loop. */
   if ((now_ms - white_pwm_last_step_ms) < APP_WHITE_PWM_STEP_MS)
   {
     return;
@@ -91,7 +94,14 @@ uint16_t WhitePwm_GetCW(void)
 
 void WhitePwm_Off(void)
 {
-  WhitePwm_SetBoth(0U, 0U);
+  /* Fault shutdown bypasses smoothing and writes 0 duty immediately. */
+  white_pwm_ww_target = 0U;
+  white_pwm_cw_target = 0U;
+  white_pwm_ww_current = 0U;
+  white_pwm_cw_current = 0U;
+  WhitePwm_ApplyChannel(WHITE_PWM_WW_TIM_CHANNEL, 0U);
+  WhitePwm_ApplyChannel(WHITE_PWM_CW_TIM_CHANNEL, 0U);
+  WhitePwm_UpdateWatch();
 }
 
 static uint16_t WhitePwm_ClampLevel(uint16_t level)
@@ -103,6 +113,7 @@ static uint8_t WhitePwm_Approach(uint16_t *current, uint16_t target)
 {
   uint16_t next;
 
+  /* Move one channel by a fixed step without overshooting the target. */
   if (*current == target)
   {
     return 0U;
@@ -130,6 +141,7 @@ static uint8_t WhitePwm_Approach(uint16_t *current, uint16_t target)
 
 static void WhitePwm_ApplyChannel(uint32_t channel, uint16_t level)
 {
+  /* Convert the public 0..1000 level to TIM1 compare counts. */
   uint32_t period_counts = (uint32_t)__HAL_TIM_GET_AUTORELOAD(&htim1) + 1U;
   uint32_t pulse = ((period_counts * (uint32_t)level) + (APP_WHITE_PWM_MAX_LEVEL / 2U)) /
                    APP_WHITE_PWM_MAX_LEVEL;

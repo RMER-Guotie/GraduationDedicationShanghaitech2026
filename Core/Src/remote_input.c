@@ -5,6 +5,7 @@
 
 #define REMOTE_INPUT_VALID_MASK  0x0FU
 
+/* Physical RC input map: bit0..bit3 are PB11, PB10, PB2, PB1. */
 typedef struct
 {
   GPIO_TypeDef *port;
@@ -37,6 +38,7 @@ static void RemoteInput_UpdateWatch(void);
 
 void RemoteInput_Init(void)
 {
+  /* Runtime GPIO setup keeps Cube-generated gpio.c untouched. */
   GPIO_InitTypeDef GPIO_InitStruct = {0};
   uint32_t channel;
 
@@ -68,6 +70,7 @@ void RemoteInput_Poll(uint32_t now_ms)
   uint8_t changed_bits;
   uint32_t channel;
 
+  /* Debounce by accepting a candidate only after it stays unchanged. */
   raw_bits = RemoteInput_ReadPins();
   remote_input_raw_bits = raw_bits;
 
@@ -118,6 +121,7 @@ uint8_t RemoteInput_GetStableBits(void)
 
 uint8_t RemoteInput_ConsumeChangedBits(void)
 {
+  /* Change flags are edge-like events consumed by higher-level logic. */
   uint8_t changed_bits = remote_input_changed_bits;
 
   remote_input_changed_bits = 0U;
@@ -138,6 +142,7 @@ uint32_t RemoteInput_GetEdgeCount(uint8_t channel)
 
 static uint8_t RemoteInput_ReadPins(void)
 {
+  /* Convert GPIO pin states into the active-high logical bit mask. */
   uint8_t bits = 0U;
   uint32_t channel;
 

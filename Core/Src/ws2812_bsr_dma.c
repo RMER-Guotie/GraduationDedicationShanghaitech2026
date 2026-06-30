@@ -17,6 +17,7 @@
 
 #define WS2812_BSR_SET(mask)           ((uint32_t)(mask))
 #define WS2812_BSR_RESET(mask)         ((uint32_t)(mask) << 16U)
+/* All WS2812 lanes are driven together through GPIOA BSRR writes. */
 #define WS2812_BSR_ACTIVE_MASK         ((uint16_t)(CH1_Pin | CH2_Pin | CH3_Pin | CH4_Pin | \
                                                    CH5_Pin | CH6_Pin | CH7_Pin | CH8_Pin))
 
@@ -50,6 +51,7 @@ static DMA_HandleTypeDef ws2812_hdma_tim4_up;
 static DMA_HandleTypeDef ws2812_hdma_tim4_cc1;
 static DMA_HandleTypeDef ws2812_hdma_tim4_cc2;
 
+/* Diagnostic counters are intended for live debugger watch windows. */
 volatile uint32_t ws2812_bsr_diag_show_count;
 volatile uint32_t ws2812_bsr_diag_complete_count;
 volatile uint32_t ws2812_bsr_diag_error_count;
@@ -88,6 +90,7 @@ static void WS2812_BSR_DemoColorWheel(uint8_t hue, uint8_t brightness, uint8_t *
 
 void WS2812_BSR_Init(void)
 {
+  /* TIM4 events pace three DMA streams that write GPIOA->BSRR. */
   __HAL_RCC_DMA1_CLK_ENABLE();
 
   ws2812_set_all_word = WS2812_BSR_SET(WS2812_BSR_ACTIVE_MASK);
@@ -173,8 +176,10 @@ void WS2812_BSR_SetPixel(uint8_t lane, uint16_t index, uint8_t r, uint8_t g, uin
   ws2812_frame[lane][index].g = g;
   ws2812_frame[lane][index].b = b;
 }
+
 void WS2812_BSR_Show(void)
 {
+  /* Encode and start a nonblocking WS2812 frame transfer. */
   if ((ws2812_initialized == 0U) || (ws2812_busy != 0U))
   {
     return;
@@ -233,8 +238,25 @@ void WS2812_BSR_Show(void)
   __HAL_TIM_ENABLE(&htim4);
 }
 
+void WS2812_BSR_ForceBlack(void)
+{
+  /* Fault path: stop any active waveform and hold all lanes low. */
+  WS2812_BSR_Clear();
+
+  if (ws2812_initialized == 0U)
+  {
+    return;
+  }
+
+  WS2812_BSR_AbortDma();
+  ws2812_busy = 1U;
+  ws2812_dma_done = 1U;
+  ws2812_latch_start_tick = HAL_GetTick();
+}
+
 void WS2812_BSR_Poll(void)
 {
+  /* Poll handles latch timing plus any missed DMA IRQ completion. */
   if (ws2812_busy == 0U)
   {
     return;
@@ -292,6 +314,7 @@ uint8_t WS2812_BSR_IsBusy(void)
 
 void WS2812_BSR_TestPatternStep(uint32_t now_ms)
 {
+  /* Validation animation runs at a fixed software rate when not busy. */
   uint8_t brightness;
   uint32_t lane;
   uint32_t index;
@@ -358,10 +381,13 @@ void WS2812_BSR_TestPatternStep(uint32_t now_ms)
 
 void DMA1_Channel4_IRQHandler(void)
 {
+  /* CH2 DMA completion marks the end of one WS2812 bitstream. */
   HAL_DMA_IRQHandler(&ws2812_hdma_tim4_cc2);
 }
+
 static void WS2812_BSR_InitGpio(void)
 {
+  /* PA0..PA7 are normal push-pull outputs for BSRR DMA driving. */
   GPIO_InitTypeDef GPIO_InitStruct = {0};
 
   __HAL_RCC_GPIOA_CLK_ENABLE();
@@ -393,6 +419,7 @@ static HAL_StatusTypeDef WS2812_BSR_InitDmaHandle(DMA_HandleTypeDef *hdma, DMA_C
 
 static void WS2812_BSR_EncodeByte(uint32_t **zero_dst, const uint8_t lane_byte[WS2812_BSR_LANES])
 {
+  /* Each word resets only the lanes that carry a 0 bit. */
   uint32_t bit;
 
   for (bit = 0U; bit < 8U; bit++)
@@ -416,6 +443,7 @@ static void WS2812_BSR_EncodeByte(uint32_t **zero_dst, const uint8_t lane_byte[W
 
 static void WS2812_BSR_EncodeFrame(void)
 {
+  /* WS2812 byte order is GRB, encoded across all lanes in parallel. */
   uint32_t pixel;
   uint32_t *zero_dst = ws2812_zero_reset_buffer;
 
@@ -448,6 +476,7 @@ static void WS2812_BSR_StopTimerDma(void)
 
 static void WS2812_BSR_ApplyTiming(void)
 {
+  /* 72 MHz / 90 ticks gives about 1.25 us per WS2812 bit. */
   __HAL_TIM_SET_PRESCALER(&htim4, 0U);
   __HAL_TIM_SET_AUTORELOAD(&htim4, WS2812_BSR_TIMER_PERIOD);
   __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, WS2812_BSR_ZERO_COMPARE);
@@ -514,6 +543,7 @@ static void WS2812_BSR_CleanupCompletedDma(void)
 
 static void WS2812_BSR_AbortDma(void)
 {
+  /* Abort leaves all lanes low so LEDs see a safe idle level. */
   WS2812_BSR_StopTimerDma();
   WS2812_BSR_ReleaseDmaHandle(&ws2812_hdma_tim4_up);
   WS2812_BSR_ReleaseDmaHandle(&ws2812_hdma_tim4_cc1);
@@ -527,6 +557,7 @@ static void WS2812_BSR_MarkDmaDone(void)
   ws2812_latch_start_tick = HAL_GetTick();
   ws2812_dma_done = 1U;
 }
+
 static void WS2812_BSR_DemoColorWheel(uint8_t hue, uint8_t brightness, uint8_t *r, uint8_t *g, uint8_t *b)
 {
   uint16_t red = 0U;

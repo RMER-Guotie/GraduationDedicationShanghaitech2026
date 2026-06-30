@@ -13,13 +13,20 @@ extern "C" {
 #define REMOTE_INPUT_D2_BIT         0x04U
 #define REMOTE_INPUT_D3_BIT         0x08U
 
+/* Configure RC_D0..RC_D3 as debounced GPIO inputs. */
 void RemoteInput_Init(void);
+/* Poll and debounce the 4-bit RC input state. */
 void RemoteInput_Poll(uint32_t now_ms);
+/* Return the latest direct pin sample. */
 uint8_t RemoteInput_GetRawBits(void);
+/* Return the debounced 4-bit state. */
 uint8_t RemoteInput_GetStableBits(void);
+/* Return and clear debounced change flags. */
 uint8_t RemoteInput_ConsumeChangedBits(void);
+/* Return the debounced edge count for one channel. */
 uint32_t RemoteInput_GetEdgeCount(uint8_t channel);
 
+/* Watch variables for debugger inspection. */
 extern volatile uint8_t remote_input_watch_raw_bits;
 extern volatile uint8_t remote_input_watch_stable_bits;
 extern volatile uint8_t remote_input_watch_changed_bits;
