@@ -26,4 +26,10 @@
 #define APP_CURRENT_ADC_TIMEOUT_MS        2U
 #define APP_CURRENT_FILTER_SHIFT          3U
 
+/* Host communication protocol and transport settings. */
+#define APP_COMM_PROTOCOL_VERSION         1U
+#define APP_COMM_UART_BAUD                921600U
+#define APP_COMM_UART_TX_TIMEOUT_MS       2U
+#define APP_COMM_LONG_TIMEOUT_MS          10000U
+
 #endif /* APP_CONFIG_H */

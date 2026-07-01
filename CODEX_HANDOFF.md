@@ -293,13 +293,16 @@ Behavior:
 - Keeps Cube-generated `main.c` thin: `main.c` only calls `AppController_Init()` after peripheral init and `AppController_Poll(HAL_GetTick())` in the loop.
 - Poll order is:
   - `CommTransport_Poll(now_ms)`
+  - `CommProtocol_Poll(now_ms)`
   - `RemoteInput_Poll(now_ms)`
   - `CurrentProtect_Poll(now_ms)`
   - `WhitePwm_Poll(now_ms)`
   - fault handling or WS2812 test pattern handling
 - On fault entry, calls `WS2812_BSR_ForceBlack()`.
 - During active fault, retransmits black WS2812 frames whenever idle.
-- During normal validation mode, calls `WS2812_BSR_TestPatternStep(now_ms)`.
+- During normal mode, protocol output owns WS2812 once any valid host protocol
+  packet is received. Before host control starts, the built-in WS2812 validation
+  pattern can still run.
 
 APIs:
 
@@ -325,8 +328,7 @@ Files added:
 
 Behavior:
 
-- Implements the first USB communication stage only: byte搬运 into a shared RX
-  ring and debug counters.
+- Implements the shared byte transport for USB CDC and UART.
 - Defines a statically allocated shared RX ring:
 
 ```c
@@ -338,13 +340,23 @@ uint8_t comm_transport_rx_ring[COMM_RX_RING_SIZE];
   and immediately re-arms USB receive.
 - No protocol parsing, frame transaction handling, or lighting output update is
   done in the USB callback.
+- UART RX uses USART1 RX DMA1 Channel5 in circular mode and writes directly into
+  the same `comm_transport_rx_ring[256]`.
+- USART1 baud is overridden at runtime to `APP_COMM_UART_BAUD = 921600`; `.ioc`
+  was not changed for this step.
+- UART TX does not use DMA. Small responses use blocking `HAL_UART_Transmit()`.
+- USB TX responses use one static `COMM_TX_BUFFER_SIZE = 128` buffer and retry
+  while CDC is busy; no large TX queue is implemented.
+- Active transport is tracked as none / USB / UART. When the active link changes,
+  the transport marks a link-change flag so the protocol layer can reset parser
+  and frame transaction state.
 - If a USB packet does not fit in the ring, the packet is dropped as a whole,
   overflow state is recorded, and future parser logic must resynchronize at the
   next sync word.
 - Ring access uses a short critical section because USB receive can write from
   interrupt context while the main loop or future parser reads.
-- `CommTransport_Poll()` currently refreshes debug/watch variables only, inside a
-  short critical section.
+- `CommTransport_Poll()` refreshes UART DMA write position, debug/watch variables,
+  and pending USB TX state.
 
 APIs:
 
@@ -353,9 +365,12 @@ void CommTransport_Init(void);
 void CommTransport_Poll(uint32_t now_ms);
 uint16_t CommTransport_WriteFromUsb(const uint8_t *data, uint16_t len);
 uint16_t CommTransport_Read(uint8_t *data, uint16_t max_len);
+uint16_t CommTransport_Send(const uint8_t *data, uint16_t len);
 void CommTransport_ClearRx(void);
 uint16_t CommTransport_GetRxUsed(void);
 uint8_t CommTransport_ConsumeOverflow(void);
+uint8_t CommTransport_ConsumeLinkChanged(void);
+CommTransportLink_t CommTransport_GetActiveLink(void);
 ```
 
 Debug globals:
@@ -371,6 +386,105 @@ comm_transport_watch_usb_packet_count
 comm_transport_watch_rx_total_bytes
 comm_transport_watch_rx_dropped_bytes
 comm_transport_watch_rx_overflow_count
+comm_transport_watch_active_link
+comm_transport_watch_link_changed
+comm_transport_watch_uart_dma_started
+comm_transport_watch_tx_state
+comm_transport_watch_uart_byte_count
+comm_transport_watch_link_switch_count
+comm_transport_watch_tx_packet_count
+comm_transport_watch_tx_busy_drop_count
+comm_transport_watch_tx_error_count
+```
+
+### 8. Communication Protocol Module
+
+Files added:
+
+- `Core/Inc/comm_protocol.h`
+- `Core/Src/comm_protocol.c`
+- `COMM_PROTOCOL.md`
+
+Behavior:
+
+- Implements the first USB/UART parser and frame transaction layer.
+- Packet format is:
+
+```text
+sync0 sync1 version type seq payload_len flags payload crc16
+```
+
+- Sync is `0x5A 0xA5`.
+- Version is `APP_COMM_PROTOCOL_VERSION = 1`.
+- CRC is CRC16-CCITT-FALSE over `version..payload`.
+- Parser state machine is implemented as:
+
+```text
+WAIT_SYNC0 -> WAIT_SYNC1 -> READ_HEADER -> READ_PAYLOAD -> READ_CRC0 -> READ_CRC1
+```
+
+- Implemented message types:
+  - `HELLO_REQ`
+  - `HELLO_RSP`
+  - `FRAME_BEGIN`
+  - `FRAME_RGB_CHUNK`
+  - `FRAME_COMMIT`
+  - `ALL_BLACK`
+  - `STATUS_REQ`
+  - `STATUS_RSP`
+  - `ERROR_RSP`
+- `uid_hash` is derived from the STM32 UID base address and returned in
+  `HELLO_RSP`; `role_id` is currently `0xFF` / unknown.
+- A statically allocated staging RGB frame stores one uncommitted `8 x 96 x RGB`
+  frame, adding `2304 bytes` RAM.
+- One full frame uses 16 chunks. Each chunk carries 144 bytes = 48 RGB pixels.
+- Chunk mapping is lane-major:
+  - chunk 0/1 -> lane 0 pixels 0..47 / 48..95,
+  - chunk 2/3 -> lane 1,
+  - ...
+  - chunk 14/15 -> lane 7.
+- `FRAME_BEGIN` records frame ID, chunk count, WW/CW metadata, and optional
+  frame CRC32. The current first version stores but does not verify frame CRC32.
+- CRC-valid chunks write only into the staging frame and update `received_mask`.
+- `FRAME_COMMIT` succeeds only when frame ID matches, all 16 chunks are received,
+  no severe transaction error is active, and overcurrent fault is inactive.
+- Successful commit copies staging RGB into the WS2812 software frame, applies
+  WW/CW target levels, and triggers WS2812 output. If WS2812 DMA is busy, it
+  sets `pending_show` and sends the newest committed frame after DMA becomes idle.
+- `FRAME_COMMIT` always sends a response using message type `FRAME_COMMIT`.
+- `ALL_BLACK` discards any active frame transaction, calls `WhitePwm_Off()`, and
+  calls `WS2812_BSR_ForceBlack()`.
+- After host control starts, if no valid protocol packet is received for
+  `APP_COMM_LONG_TIMEOUT_MS = 10000`, output is forced black.
+- Overcurrent protection remains higher priority than protocol output.
+
+APIs:
+
+```c
+void CommProtocol_Init(void);
+void CommProtocol_Poll(uint32_t now_ms);
+void CommProtocol_OutputPoll(uint32_t now_ms);
+uint8_t CommProtocol_HasOutputControl(void);
+void CommProtocol_Reset(void);
+```
+
+Debug globals:
+
+```c
+comm_protocol_watch_parser_state
+comm_protocol_watch_host_control_active
+comm_protocol_watch_pending_show
+comm_protocol_watch_last_error
+comm_protocol_watch_frame_id
+comm_protocol_watch_received_mask
+comm_protocol_watch_uid_hash
+comm_protocol_watch_packet_count
+comm_protocol_watch_crc_error_count
+comm_protocol_watch_parser_error_count
+comm_protocol_watch_commit_count
+comm_protocol_watch_commit_error_count
+comm_protocol_watch_timeout_black_count
+comm_protocol_watch_last_valid_packet_ms
 ```
 
 ## Planned ADC Current Protection Architecture
@@ -441,8 +555,9 @@ EXTI migration until the user authorizes the specific implementation step.
 
 ## Planned USB / UART Communication Architecture
 
-This section records the confirmed communication design. Do not implement any
-item here until the user authorizes the specific implementation step.
+This section records the confirmed communication design and current first
+implementation status. Further protocol, buffering, or `.ioc` changes still need
+separate authorization.
 
 ### Transport Ownership
 
@@ -454,12 +569,14 @@ item here until the user authorizes the specific implementation step.
   - parser state,
   - the current frame transaction.
 - This prevents partial packets from one link from contaminating the next link.
+- Current implementation tracks active link and resets parser/transaction on a
+  link-change flag.
 
 ### USB CDC Layer
 
 - USB CDC is treated as a byte stream. One `CDC_Receive_FS()` callback is not a
   complete protocol packet.
-- First USB receive stage is implemented. `CDC_Receive_FS()` now only:
+- USB receive stage is implemented. `CDC_Receive_FS()` now only:
   - copy `Buf[0..Len-1]` into the shared application RX ring,
   - immediately re-arm USB receive,
   - avoid protocol parsing,
@@ -477,6 +594,13 @@ item here until the user authorizes the specific implementation step.
 - Per-chunk ACK is not required by default unless a debug stage explicitly needs it.
 - `CDC_Transmit_FS()` may return `USBD_BUSY`; TX code must handle this without
   blocking lighting output.
+- Current USB TX handling uses one 128-byte static response buffer and drops a
+  new response if the previous response is still in flight.
+- `CDC_Control_FS()` now keeps a minimal line-coding state for host
+  `SET_LINE_CODING` / `GET_LINE_CODING` requests. The default reported line
+  coding is 921600 8N1.
+- `CDC_Transmit_FS()` now checks for null payloads and an unenumerated USB CDC
+  class handle before accessing `TxState`.
 
 ### Shared RX Ring
 
@@ -522,11 +646,14 @@ Bandwidth estimate:
 - At `921600` baud with 8N1 framing, effective throughput is about `92 KB/s`.
   This is not enough for 60 fps full-frame RGB, so UART is a lower-frame-rate
   backup/debug transport unless a higher baud is validated later.
+- Current implementation starts USART1 RX DMA1 Channel5 in circular mode from
+  `CommTransport_Init()` and overrides baud to `921600` at runtime. `.ioc` was
+  not modified for this.
 
 ### Protocol And Frame Transaction
 
 - Protocol packets must have explicit boundaries and must not be raw RGB bytes.
-- Packet fields:
+- Packet fields are implemented as:
   - sync,
   - version,
   - type,
@@ -535,10 +662,10 @@ Bandwidth estimate:
   - flags,
   - payload,
   - CRC16.
-- Parser state machine:
+- Parser state machine implemented:
 
 ```text
-WAIT_SYNC -> READ_HEADER -> READ_PAYLOAD -> READ_CRC -> DISPATCH
+WAIT_SYNC0 -> WAIT_SYNC1 -> READ_HEADER -> READ_PAYLOAD -> READ_CRC0 -> READ_CRC1 -> DISPATCH
 ```
 
 - Parser checks:
@@ -565,7 +692,8 @@ Confirmed message types:
 Frame transaction rules:
 
 - `FRAME_BEGIN` starts a transaction and records frame ID, chunk count, optional
-  frame CRC32, and WW/CW frame metadata.
+  frame CRC32, and WW/CW frame metadata. Current implementation stores but does
+  not verify frame CRC32.
 - WW/CW white levels are stored as frame metadata and take effect only after a
   successful `FRAME_COMMIT`.
 - Each RGB chunk is planned as 144 bytes, representing 48 RGB LEDs.
@@ -574,6 +702,7 @@ Frame transaction rules:
 - A `received_mask` tracks the 16 chunks.
 - `FRAME_COMMIT` is accepted only when frame ID matches, all chunks are received,
   and no severe transaction error is active.
+- `COMM_PROTOCOL.md` is the host-facing protocol handoff document.
 
 ### Frame Output And Timeout Policy
 
@@ -587,6 +716,7 @@ Frame transaction rules:
   `10 seconds`, configurable by macro later.
 - `ALL_BLACK` is a high-priority command.
 - Existing overcurrent protection behavior must be preserved.
+- Current implementation rejects `FRAME_COMMIT` while overcurrent fault is active.
 
 ### Device Identity
 
@@ -630,6 +760,7 @@ HAL_Delay(1);
 - `../Core/Src/current_protect.c`
 - `../Core/Src/app_controller.c`
 - `../Core/Src/comm_transport.c`
+- `../Core/Src/comm_protocol.c`
 
 ## IOC Changes Made
 
@@ -661,18 +792,38 @@ This targets about 20 kHz PWM at 72 MHz TIM1 clock:
 
 Important: `tim.c` is still generated code. After this `.ioc` change, the user must regenerate with CubeMX for generated `MX_TIM1_Init()` to actually use ARR 3599. Do not manually edit `tim.c` generated area.
 
-## Last Build Status
-
-A Keil build was run before the user asked not to compile without request.
-
-Result at that time, before white_pwm module was added:
+RC input pins were also aligned in `pixel_light.ioc` after user authorization:
 
 ```text
-0 Error(s), 7 Warning(s)
-Program Size: Code=19860 RO-data=360 RW-data=460 ZI-data=18324
+PB11 / RC_D0 = GPIO_Input, GPIO_PULLDOWN
+PB10 / RC_D1 = GPIO_Input, GPIO_PULLDOWN
+PB2  / RC_D2 = GPIO_Input, GPIO_PULLDOWN
+PB1  / RC_D3 = GPIO_Input, GPIO_PULLDOWN
 ```
 
-The warnings were only missing final newline warnings in newly added files. Those newline issues were later fixed. No build has been run after adding `white_pwm`, `current_protect`, and `app_controller`.
+Generated `Core/Src/gpio.c` was not regenerated in this step. Current firmware
+behavior still remains valid because `RemoteInput_Init()` reconfigures these
+four pins as input pulldown at runtime.
+
+## Last Build Status
+
+A Keil command-line build was run after user authorization while validating the
+first USB/UART protocol implementation and CDC buffer shrink.
+
+Current result:
+
+```text
+0 Error(s), 0 Warning(s)
+Program Size: Code=26732 RO-data=376 RW-data=728 ZI-data=19592
+Total RW Size: 20320 bytes
+RW_IRAM1: 0x4f60 / 0x5000
+RAM remaining: 160 bytes
+```
+
+The build passes, but RAM margin is extremely small. The current design keeps
+both `ws2812_frame[2304]` and `comm_protocol_staging_frame[2304]` as approved.
+If later features add more global/static RAM, revisit heap/stack sizing, USB
+descriptor buffer size, or the frame-staging strategy.
 
 ## Known Checks / Potential Issues For Next Agent
 
@@ -689,6 +840,12 @@ The warnings were only missing final newline warnings in newly added files. Thos
 4. `.ioc` has TIM1 20 kHz settings and current `Core/Src/tim.c` already shows `htim1.Init.Period = 3599`.
 5. Current protection is implemented, but hardware thresholds should still be validated on the bench because the calculation assumes 0.5 mOhm shunt, 50x gain, and 3.3 V ADC reference.
 6. WS2812 fault handling now uses `WS2812_BSR_ForceBlack()` on fault entry, then retransmits an all-black frame whenever idle.
+7. USB/UART protocol code now compiles in Keil with 0 errors and 0 warnings, but
+   it still needs bench/host-side communication testing.
+8. UART RX DMA writes directly into the shared 256-byte RX ring. This relies on
+   the confirmed hardware usage that only USB or UART is active at one time.
+9. The first protocol implementation stores `frame_crc32` from `FRAME_BEGIN` but
+   does not verify it yet; packet-level CRC16 is implemented.
 
 ## Suggested Commit Message For Current Source State
 

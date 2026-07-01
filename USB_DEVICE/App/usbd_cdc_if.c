@@ -32,6 +32,13 @@
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
+static uint8_t cdc_line_coding[7] =
+{
+  0x00, 0x10, 0x0E, 0x00, /* 921600 baud, little-endian */
+  0x00,                   /* 1 stop bit */
+  0x00,                   /* no parity */
+  0x08                    /* 8 data bits */
+};
 
 /* USER CODE END PV */
 
@@ -219,10 +226,30 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
   /* 6      | bDataBits  |   1   | Number Data bits (5, 6, 7, 8 or 16).          */
   /*******************************************************************************/
     case CDC_SET_LINE_CODING:
+      if ((pbuf != 0) && (length >= sizeof(cdc_line_coding)))
+      {
+        cdc_line_coding[0] = pbuf[0];
+        cdc_line_coding[1] = pbuf[1];
+        cdc_line_coding[2] = pbuf[2];
+        cdc_line_coding[3] = pbuf[3];
+        cdc_line_coding[4] = pbuf[4];
+        cdc_line_coding[5] = pbuf[5];
+        cdc_line_coding[6] = pbuf[6];
+      }
 
     break;
 
     case CDC_GET_LINE_CODING:
+      if ((pbuf != 0) && (length >= sizeof(cdc_line_coding)))
+      {
+        pbuf[0] = cdc_line_coding[0];
+        pbuf[1] = cdc_line_coding[1];
+        pbuf[2] = cdc_line_coding[2];
+        pbuf[3] = cdc_line_coding[3];
+        pbuf[4] = cdc_line_coding[4];
+        pbuf[5] = cdc_line_coding[5];
+        pbuf[6] = cdc_line_coding[6];
+      }
 
     break;
 
@@ -286,6 +313,10 @@ uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len)
   uint8_t result = USBD_OK;
   /* USER CODE BEGIN 7 */
   USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef*)hUsbDeviceFS.pClassData;
+  if ((Buf == 0) || (Len == 0U) || (hcdc == 0))
+  {
+    return USBD_FAIL;
+  }
   if (hcdc->TxState != 0){
     return USBD_BUSY;
   }

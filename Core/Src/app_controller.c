@@ -1,6 +1,7 @@
 #include "app_controller.h"
 
 #include "comm_transport.h"
+#include "comm_protocol.h"
 #include "current_protect.h"
 #include "remote_input.h"
 #include "white_pwm.h"
@@ -24,6 +25,7 @@ void AppController_Init(void)
   WhitePwm_Init();
   CurrentProtect_Init();
   CommTransport_Init();
+  CommProtocol_Init();
 
   app_controller_watch_loop_count = 0U;
   app_controller_fault_was_active = 0U;
@@ -36,6 +38,7 @@ void AppController_Poll(uint32_t now_ms)
   app_controller_watch_loop_count++;
 
   CommTransport_Poll(now_ms);
+  CommProtocol_Poll(now_ms);
   RemoteInput_Poll(now_ms);
   CurrentProtect_Poll(now_ms);
   WhitePwm_Poll(now_ms);
@@ -73,7 +76,13 @@ static void AppController_HandleNormal(uint32_t now_ms)
 {
   app_controller_fault_was_active = 0U;
 
-  /* Normal validation mode: animate the WS2812 lanes. */
+  if (CommProtocol_HasOutputControl() != 0U)
+  {
+    CommProtocol_OutputPoll(now_ms);
+    return;
+  }
+
+  /* Validation animation runs until the host protocol takes ownership. */
   WS2812_BSR_TestPatternStep(now_ms);
 }
 
