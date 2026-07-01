@@ -1,0 +1,12 @@
+{
+  "devices": {
+    "0x12345678": {
+      "role": 0,
+      "name": "board_0"
+    },
+    "0x9abcdef0": {
+      "role": 1,
+      "name": "board_1"
+    }
+  }
+}

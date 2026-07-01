@@ -730,6 +730,68 @@ Frame transaction rules:
   can be extended.
 - The host must not rely on COM port order to identify multiple boards.
 
+## Host Debug Tool
+
+First host-side debug/control tool has been started under `host_tool/`.
+
+Current scope:
+
+- Python implementation, intended for quick protocol validation before the GUI.
+- `pyserial` is used for USB CDC virtual COM and UART COM access.
+- `PySide6` GUI debug panel has been added for manual bench control.
+- Host protocol packing/parsing mirrors the firmware protocol:
+  - sync `0x5A 0xA5`,
+  - protocol version `1`,
+  - CRC16-CCITT-FALSE,
+  - 16 RGB chunks per full frame,
+  - each RGB chunk carries 144 bytes / 48 pixels,
+  - lane-major `8 x 96` mapping.
+- Implemented CLI commands:
+
+```text
+python -m tools.scan_devices
+python -m tools.status COM5
+python -m tools.all_black COM5
+python -m tools.send_solid COM5 --rgb 255 0 0 --ww 0 --cw 0
+python -m tools.gui
+```
+
+Current files:
+
+- `host_tool/pixel_host/protocol.py`: packet format, frame chunking, response parsers.
+- `host_tool/pixel_host/serial_link.py`: serial port open/read/write/transaction layer.
+- `host_tool/pixel_host/device.py`: high-level device actions.
+- `host_tool/pixel_host/patterns.py`: simple test frame generation.
+- `host_tool/pixel_host/gui.py`: PySide6 debug GUI.
+- `host_tool/tools/*.py`: CLI entry points.
+- `host_tool/tests/test_protocol.py`: host-side protocol self-tests.
+- `host_tool/README.md`: install and command usage.
+
+Current GUI features:
+
+- serial port refresh/connect/disconnect,
+- HELLO and STATUS requests,
+- ALL_BLACK command,
+- solid RGB frame send with WW/CW metadata,
+- 8-lane color test frame send,
+- optional status refresh after output commands,
+- text log for responses and errors.
+
+Validation performed:
+
+```text
+python -m compileall host_tool
+protocol self-tests passed
+```
+
+Current limitations:
+
+- No persistent multi-board role mapping beyond the example JSON file.
+- No live frame streaming loop yet; the first command path sends discrete frames.
+- No automatic dependency installation has been run.
+- GUI operations are currently synchronous and intended for bench debug, not
+  high-rate streaming.
+
 ## Main Integration
 
 `Core/Src/main.c` was modified only inside USER CODE sections:

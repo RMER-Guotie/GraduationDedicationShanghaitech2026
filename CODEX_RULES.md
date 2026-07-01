@@ -17,14 +17,15 @@ or other high-cost action.
 ## Reply Rules
 
 - Every reply must start with `guotie你好`.
-- Every reply must end with a concise statement of the expected nature of the
-  user's next prompt.
-- The expected next prompt must be exactly one of these two categories:
-  - `给出信息`: the user should provide more information, opinions, constraints,
-    or design choices.
-  - `授权`: the user should explicitly approve a proposed code/document change,
-    build/run action, or other costly action.
+- Every reply must end with exactly one concise next-prompt line.
+- The next-prompt line must use exactly one of these two categories:
+  - `下一个 prompt 期望：给出信息：<specific information, opinion, constraint, or design choice needed from the user>.`
+  - `下一个 prompt 期望：授权：<specific code/document change, build/run action, commit/push, or other costly action needing approval>.`
 - `给出信息` and `授权` are mutually exclusive.
+- If information is incomplete, end with `给出信息` and do not ask for authorization
+  in the same reply.
+- If information is sufficient and an action is ready, provide the plan first,
+  then end with `授权`.
 
 ## Information And Authorization Flow
 
