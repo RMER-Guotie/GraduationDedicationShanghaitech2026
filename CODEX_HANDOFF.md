@@ -120,8 +120,9 @@ Files added:
 
 Behavior:
 
-- Runtime reconfigures PB1/PB2/PB10/PB11 as input with pulldown in `RemoteInput_Init()`.
-- Does not modify Cube-generated `gpio.c`.
+- Generated `gpio.c` configures PB1/PB2/PB10/PB11 as input with pulldown.
+- `RemoteInput_Init()` also reconfigures PB1/PB2/PB10/PB11 as input with pulldown
+  at runtime to keep the RC module robust after future CubeMX regeneration.
 - Active high.
 - Polling debounce, default `5 ms`.
 - Current implementation is still polling-based. The planned final RC design is
@@ -801,9 +802,9 @@ PB2  / RC_D2 = GPIO_Input, GPIO_PULLDOWN
 PB1  / RC_D3 = GPIO_Input, GPIO_PULLDOWN
 ```
 
-Generated `Core/Src/gpio.c` was not regenerated in this step. Current firmware
-behavior still remains valid because `RemoteInput_Init()` reconfigures these
-four pins as input pulldown at runtime.
+Generated `Core/Src/gpio.c` is now also aligned to configure these four pins as
+input pulldown. `RemoteInput_Init()` still repeats the same configuration at
+runtime for robustness.
 
 ## Last Build Status
 
