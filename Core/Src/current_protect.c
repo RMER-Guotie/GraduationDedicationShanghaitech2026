@@ -18,7 +18,7 @@ static uint32_t current_protect_current_ma;
 static uint32_t current_protect_filtered_adc_q4;
 static uint32_t current_protect_last_sample_ms;
 static uint32_t current_protect_trip_count;
-static uint8_t current_protect_fault;
+static uint8_t current_protect_fault_latched;
 static uint8_t current_protect_filter_seeded;
 
 static void CurrentProtect_ConfigAdcChannel(void);
@@ -36,7 +36,7 @@ void CurrentProtect_Init(void)
   current_protect_filtered_adc_q4 = 0U;
   current_protect_last_sample_ms = 0U;
   current_protect_trip_count = 0U;
-  current_protect_fault = 0U;
+  current_protect_fault_latched = 0U;
   current_protect_filter_seeded = 0U;
 
   CurrentProtect_ConfigAdcChannel();
@@ -48,8 +48,8 @@ void CurrentProtect_Poll(uint32_t now_ms)
 {
   uint16_t raw;
 
-  /* Keep white outputs forced off for the entire active fault window. */
-  if (current_protect_fault != 0U)
+  /* Keep white outputs forced off after a latched fault until MCU reset. */
+  if (current_protect_fault_latched != 0U)
   {
     WhitePwm_Off();
   }
@@ -75,7 +75,7 @@ void CurrentProtect_Poll(uint32_t now_ms)
 
 uint8_t CurrentProtect_IsFaultActive(void)
 {
-  return current_protect_fault;
+  return current_protect_fault_latched;
 }
 
 uint16_t CurrentProtect_GetAdcRaw(void)
@@ -153,12 +153,12 @@ static uint32_t CurrentProtect_AdcToCurrentMa(uint16_t raw)
 
 static void CurrentProtect_UpdateFault(void)
 {
-  /* Hysteresis prevents chatter around the current limit. */
-  if (current_protect_fault == 0U)
+  /* Overcurrent is latched until MCU reset; no software auto-release path. */
+  if (current_protect_fault_latched == 0U)
   {
     if (current_protect_current_ma >= APP_CURRENT_PROTECT_TRIP_MA)
     {
-      current_protect_fault = 1U;
+      current_protect_fault_latched = 1U;
       current_protect_trip_count++;
       WhitePwm_Off();
     }
@@ -166,10 +166,6 @@ static void CurrentProtect_UpdateFault(void)
   else
   {
     WhitePwm_Off();
-    if (current_protect_current_ma <= APP_CURRENT_PROTECT_RELEASE_MA)
-    {
-      current_protect_fault = 0U;
-    }
   }
 }
 
@@ -177,6 +173,6 @@ static void CurrentProtect_UpdateWatch(void)
 {
   current_protect_watch_adc_raw = current_protect_adc_raw;
   current_protect_watch_current_ma = current_protect_current_ma;
-  current_protect_watch_fault = current_protect_fault;
+  current_protect_watch_fault = current_protect_fault_latched;
   current_protect_watch_trip_count = current_protect_trip_count;
 }

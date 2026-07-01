@@ -9,7 +9,7 @@ extern "C" {
 
 /* Configure ADC1 current sampling and reset protection state. */
 void CurrentProtect_Init(void);
-/* Sample/filter current and update the latched fault state. */
+/* Sample/filter current and latch fault state until MCU reset. */
 void CurrentProtect_Poll(uint32_t now_ms);
 /* Return nonzero while overcurrent protection is active. */
 uint8_t CurrentProtect_IsFaultActive(void);

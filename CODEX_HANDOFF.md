@@ -120,13 +120,14 @@ Files added:
 
 Behavior:
 
-- Generated `gpio.c` configures PB1/PB2/PB10/PB11 as input with pulldown.
-- `RemoteInput_Init()` also reconfigures PB1/PB2/PB10/PB11 as input with pulldown
-  at runtime to keep the RC module robust after future CubeMX regeneration.
+- Generated `gpio.c` configures PB1/PB2/PB10/PB11 as EXTI rising/falling inputs
+  with pulldown.
+- `RemoteInput_Init()` also reconfigures PB1/PB2/PB10/PB11 as EXTI inputs with
+  pulldown at runtime to keep the RC module robust after future CubeMX
+  regeneration.
 - Active high.
-- Polling debounce, default `5 ms`.
-- Current implementation is still polling-based. The planned final RC design is
-  EXTI-based and is recorded in the planned RC section below.
+- EXTI handlers update the raw 4-bit state and raw edge counters.
+- Polling debounce still publishes the stable 4-bit state, default `5 ms`.
 
 APIs:
 
@@ -171,7 +172,6 @@ Current intended macros:
 
 #define APP_CURRENT_PROTECT_SAMPLE_MS     5U
 #define APP_CURRENT_PROTECT_TRIP_MA       16000U
-#define APP_CURRENT_PROTECT_RELEASE_MA    14000U
 #define APP_CURRENT_SENSE_SHUNT_UOHM      500U
 #define APP_CURRENT_SENSE_GAIN            50U
 #define APP_CURRENT_ADC_VREF_MV           3300U
@@ -255,12 +255,13 @@ I_mA = ADC_raw * Vref_mV * 1,000,000 / (4095 * gain * shunt_uohm)
 ```
 
 - Applies a small IIR filter before comparing thresholds.
-- Trips at `16000 mA`, releases at `14000 mA`.
+- Trips at `16000 mA` and latches until MCU reset. There is no software
+  auto-release path.
 - On fault, calls `WhitePwm_Off()` every poll; `WhitePwm_Off()` now immediately zeros target/current levels and TIM1 compare registers.
 - On fault entry, `AppController` calls `WS2812_BSR_ForceBlack()` to abort active WS2812 output and force lanes low.
 - While fault remains active, `AppController` suppresses the WS2812 test pattern and retransmits an all-black WS2812 frame whenever the WS2812 driver is idle.
-- Fault state auto-clears only after the filtered current estimate is at or below
-  the release threshold.
+- Fault state only clears when the MCU restarts through the Reset key or power
+  cycle.
 
 APIs:
 
@@ -488,11 +489,11 @@ comm_protocol_watch_timeout_black_count
 comm_protocol_watch_last_valid_packet_ms
 ```
 
-## Planned ADC Current Protection Architecture
+## ADC Current Protection Architecture
 
-This section records the current-protection design constraints. Do not change
-thresholds, sampling method, or fault behavior until the user authorizes the
-specific implementation step.
+This section records the implemented current-protection design constraints. Do
+not change thresholds, sampling method, or fault behavior until the user
+authorizes the specific implementation step.
 
 - ADC current sense input is PB0 / `ADC1_IN8`.
 - Current protection remains a cooperative polling task, not an interrupt or DMA
@@ -506,9 +507,10 @@ specific implementation step.
   - current sense gain: `APP_CURRENT_SENSE_GAIN = 50`,
   - ADC reference: `APP_CURRENT_ADC_VREF_MV = 3300`,
   - ADC max count: `APP_CURRENT_ADC_MAX_COUNTS = 4095`.
-- Default hysteresis:
-  - trip: `APP_CURRENT_PROTECT_TRIP_MA = 16000`,
-  - release: `APP_CURRENT_PROTECT_RELEASE_MA = 14000`.
+- Default trip threshold:
+  - trip: `APP_CURRENT_PROTECT_TRIP_MA = 16000`.
+- Overcurrent is a latched fault. It is not released by current falling below a
+  lower threshold; only MCU reset/power cycle clears it.
 - Fault behavior:
   - white PWM is forced to zero immediately and repeatedly while fault is active,
   - WS2812 output is forced black on fault entry,
@@ -518,26 +520,26 @@ specific implementation step.
   estimate depends on shunt value, amplifier gain, ADC reference, and layout
   noise.
 
-## Planned RC EXTI Input Architecture
+## RC EXTI Input Architecture
 
-This section records the confirmed RC input direction. Do not implement this
-EXTI migration until the user authorizes the specific implementation step.
+This section records the implemented RC EXTI input direction. Do not map RC state
+to lighting behavior until the user authorizes a separate control step.
 
 - RC physical mapping remains:
   - `D0 = PB11`
   - `D1 = PB10`
   - `D2 = PB2`
   - `D3 = PB1`
-- The final RC input module should use external interrupts on rising and falling
-  edges.
-- First implementation should avoid `.ioc` changes unless the user separately
-  authorizes them. Runtime GPIO configuration in `RemoteInput_Init()` is
-  acceptable.
+- The RC input module uses external interrupts on rising and falling edges.
+- `.ioc`, generated `gpio.c`, and runtime `RemoteInput_Init()` are all aligned to
+  EXTI rising/falling input with pulldown.
 - Required interrupt lines:
   - `EXTI1` for PB1 / D3,
   - `EXTI2` for PB2 / D2,
   - `EXTI15_10` for PB10 / D1 and PB11 / D0.
-- EXTI handlers should be lightweight:
+- Current IRQ handlers are implemented in `stm32f1xx_it.c`, and the RC state
+  update is handled by `HAL_GPIO_EXTI_Callback()` in `remote_input.c`.
+- EXTI handlers are lightweight:
   - sample or mark raw state,
   - update edge counters or pending flags,
   - record timestamp if needed,
@@ -546,8 +548,8 @@ EXTI migration until the user authorizes the specific implementation step.
 - `RemoteInput_Poll(now_ms)` should continue to own debounce and stable-state
   publication.
 - Debounce target remains `APP_RC_DEBOUNCE_MS = 5 ms`.
-- The module should expose a global/state API containing only the four RC state
-  values plus optional debug/watch fields.
+- The module exposes a global/state API containing the four RC state values plus
+  optional debug/watch fields.
 - RC state is an input to higher-level control logic only. It must not be mapped
   directly to white PWM or WS2812 pixels unless the user later defines that
   behavior.
@@ -796,26 +798,27 @@ Important: `tim.c` is still generated code. After this `.ioc` change, the user m
 RC input pins were also aligned in `pixel_light.ioc` after user authorization:
 
 ```text
-PB11 / RC_D0 = GPIO_Input, GPIO_PULLDOWN
-PB10 / RC_D1 = GPIO_Input, GPIO_PULLDOWN
-PB2  / RC_D2 = GPIO_Input, GPIO_PULLDOWN
-PB1  / RC_D3 = GPIO_Input, GPIO_PULLDOWN
+PB11 / RC_D0 = GPIO_EXTI11, GPIO_PULLDOWN, rising/falling
+PB10 / RC_D1 = GPIO_EXTI10, GPIO_PULLDOWN, rising/falling
+PB2  / RC_D2 = GPIO_EXTI2,  GPIO_PULLDOWN, rising/falling
+PB1  / RC_D3 = GPIO_EXTI1,  GPIO_PULLDOWN, rising/falling
 ```
 
 Generated `Core/Src/gpio.c` is now also aligned to configure these four pins as
-input pulldown. `RemoteInput_Init()` still repeats the same configuration at
-runtime for robustness.
+EXTI rising/falling inputs with pulldown. `RemoteInput_Init()` still repeats the
+same configuration at runtime for robustness.
 
 ## Last Build Status
 
 A Keil command-line build was run after user authorization while validating the
-first USB/UART protocol implementation and CDC buffer shrink.
+ADC reset-latched overcurrent behavior, RC EXTI input migration, and CDC buffer
+shrink.
 
 Current result:
 
 ```text
 0 Error(s), 0 Warning(s)
-Program Size: Code=26732 RO-data=376 RW-data=728 ZI-data=19592
+Program Size: Code=26944 RO-data=376 RW-data=728 ZI-data=19592
 Total RW Size: 20320 bytes
 RW_IRAM1: 0x4f60 / 0x5000
 RAM remaining: 160 bytes
@@ -856,7 +859,7 @@ add ws2812 bsrr driver, rc input, white pwm, and current protection
 - add TIM4/DMA GPIOA BSRR WS2812 test driver
 - add RC_D0-D3 input state/debounce module
 - add TIM1 CH1/CH2 WW/CW white PWM control with smoothing
-- add ADC1_IN8 current protection with filtered 16A trip / 14A release
+- add ADC1_IN8 current protection with filtered 16A reset-latched trip
 - add app controller scheduler for application-level polling and fault handling
 - hook modules through main USER CODE sections
 - set TIM1 PWM target to 20 kHz in ioc

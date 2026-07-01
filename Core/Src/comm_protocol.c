@@ -69,7 +69,6 @@ static uint16_t comm_protocol_payload_index;
 static uint16_t comm_protocol_payload_len;
 static uint16_t comm_protocol_rx_crc;
 static uint8_t comm_protocol_packet_type;
-static uint8_t comm_protocol_packet_flags;
 static uint16_t comm_protocol_packet_seq;
 
 static uint8_t comm_protocol_staging_frame[WS2812_BSR_LANES][WS2812_BSR_LEDS_PER_LANE][3];
@@ -217,7 +216,6 @@ static void CommProtocol_ResetParser(void)
   comm_protocol_payload_len = 0U;
   comm_protocol_rx_crc = 0U;
   comm_protocol_packet_type = 0U;
-  comm_protocol_packet_flags = 0U;
   comm_protocol_packet_seq = 0U;
 }
 
@@ -306,7 +304,6 @@ static void CommProtocol_HeaderComplete(uint32_t now_ms)
   comm_protocol_packet_type = comm_protocol_header[1];
   comm_protocol_packet_seq = CommProtocol_ReadU16(&comm_protocol_header[2]);
   comm_protocol_payload_len = CommProtocol_ReadU16(&comm_protocol_header[4]);
-  comm_protocol_packet_flags = comm_protocol_header[6];
   comm_protocol_payload_index = 0U;
 
   if (comm_protocol_payload_len > COMM_PROTOCOL_MAX_PAYLOAD)

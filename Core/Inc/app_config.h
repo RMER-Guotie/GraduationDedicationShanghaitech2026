@@ -15,10 +15,9 @@
 #define APP_WHITE_PWM_TIM1_ARR       3599U
 #define APP_TEST_WHITE_PWM_ENABLE    1U
 
-/* Current protection sampling, conversion, and hysteresis settings. */
+/* Current protection sampling, conversion, and latch settings. */
 #define APP_CURRENT_PROTECT_SAMPLE_MS     5U
 #define APP_CURRENT_PROTECT_TRIP_MA       16000U
-#define APP_CURRENT_PROTECT_RELEASE_MA    14000U
 #define APP_CURRENT_SENSE_SHUNT_UOHM      500U
 #define APP_CURRENT_SENSE_GAIN            50U
 #define APP_CURRENT_ADC_VREF_MV           3300U
