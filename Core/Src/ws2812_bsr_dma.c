@@ -3,6 +3,7 @@
 #include "main.h"
 #include "tim.h"
 
+/* Eight-lane WS2812B output driver using TIM4-paced GPIOA BSRR DMA writes. */
 #define WS2812_BSR_BITS_PER_LED        24U
 #define WS2812_BSR_BIT_WORDS           (WS2812_BSR_LEDS_PER_LANE * WS2812_BSR_BITS_PER_LED)
 #define WS2812_BSR_RESET_MS            1U

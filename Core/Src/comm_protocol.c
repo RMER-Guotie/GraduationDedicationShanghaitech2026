@@ -10,6 +10,7 @@
 #include "white_pwm.h"
 #include "ws2812_bsr_dma.h"
 
+/* Host protocol parser and frame transaction manager. */
 #define COMM_PROTOCOL_UID_WORDS             3U
 #define COMM_PROTOCOL_UID_BASE_ADDRESS      0x1FFFF7E8UL
 #define COMM_PROTOCOL_FRAME_RECEIVED_MASK   0xFFFFU
@@ -25,6 +26,7 @@
 
 typedef enum
 {
+  /* Parser consumes one byte at a time from the shared transport ring. */
   COMM_PARSE_WAIT_SYNC0 = 0U,
   COMM_PARSE_WAIT_SYNC1 = 1U,
   COMM_PARSE_READ_HEADER = 2U,
@@ -35,6 +37,7 @@ typedef enum
 
 typedef struct
 {
+  /* Active frame metadata is valid between FRAME_BEGIN and FRAME_COMMIT. */
   uint8_t active;
   uint8_t severe_error;
   uint8_t chunk_count;
@@ -61,6 +64,7 @@ volatile uint32_t comm_protocol_watch_commit_error_count;
 volatile uint32_t comm_protocol_watch_timeout_black_count;
 volatile uint32_t comm_protocol_watch_last_valid_packet_ms;
 
+/* Packet parser scratch buffers; payload is bounded by COMM_PROTOCOL_MAX_PAYLOAD. */
 static CommProtocolParserState_t comm_protocol_parser_state;
 static uint8_t comm_protocol_header[COMM_PROTOCOL_HEADER_SIZE];
 static uint8_t comm_protocol_payload[COMM_PROTOCOL_MAX_PAYLOAD];
@@ -71,6 +75,7 @@ static uint16_t comm_protocol_rx_crc;
 static uint8_t comm_protocol_packet_type;
 static uint16_t comm_protocol_packet_seq;
 
+/* Staging frame preserves atomic commit semantics before touching output frame. */
 static uint8_t comm_protocol_staging_frame[WS2812_BSR_LANES][WS2812_BSR_LEDS_PER_LANE][3];
 static CommProtocolFrameTransaction_t comm_protocol_transaction;
 static uint8_t comm_protocol_host_control_active;
@@ -138,6 +143,7 @@ void CommProtocol_Poll(uint32_t now_ms)
 {
   uint8_t byte;
 
+  /* Transport errors invalidate the current packet and uncommitted frame. */
   if (CommTransport_ConsumeLinkChanged() != 0U)
   {
     CommProtocol_ResetParser();
@@ -174,6 +180,7 @@ void CommProtocol_OutputPoll(uint32_t now_ms)
     return;
   }
 
+  /* Long host silence forces a black output after host control has started. */
   if ((comm_protocol_timeout_black_sent == 0U) &&
       ((now_ms - comm_protocol_last_valid_packet_ms) >= APP_COMM_LONG_TIMEOUT_MS))
   {
@@ -234,6 +241,7 @@ static void CommProtocol_ResetTransaction(void)
 
 static void CommProtocol_ParseByte(uint8_t byte, uint32_t now_ms)
 {
+  /* Byte-stream framing: sync, fixed header, payload, then little-endian CRC. */
   switch (comm_protocol_parser_state)
   {
     case COMM_PARSE_WAIT_SYNC0:
@@ -293,6 +301,7 @@ static void CommProtocol_HeaderComplete(uint32_t now_ms)
 {
   (void)now_ms;
 
+  /* Header gives type, sequence, payload length, and flags. */
   if (comm_protocol_header[0] != APP_COMM_PROTOCOL_VERSION)
   {
     CommProtocol_RecordError(COMM_PROTO_ERR_BAD_VERSION);
@@ -329,6 +338,7 @@ static void CommProtocol_PacketComplete(uint32_t now_ms)
   uint16_t calc_crc;
   uint16_t index;
 
+  /* CRC covers version..payload, excluding the two sync bytes. */
   calc_crc = CommProtocol_CalcCrc(comm_protocol_header, COMM_PROTOCOL_HEADER_SIZE);
   if (comm_protocol_payload_len > 0U)
   {
@@ -359,6 +369,7 @@ static void CommProtocol_DispatchPacket(uint32_t now_ms)
 {
   (void)now_ms;
 
+  /* Only complete CRC-valid packets reach command dispatch. */
   switch (comm_protocol_packet_type)
   {
     case COMM_MSG_HELLO_REQ:
@@ -397,6 +408,7 @@ static void CommProtocol_HandleFrameBegin(void)
   uint16_t ww_level;
   uint16_t cw_level;
 
+  /* Begin clears staging and records white levels for atomic commit. */
   if (comm_protocol_payload_len != COMM_PROTOCOL_FRAME_BEGIN_LEN)
   {
     CommProtocol_RecordError(COMM_PROTO_ERR_BAD_LENGTH);
@@ -438,6 +450,7 @@ static void CommProtocol_HandleFrameChunk(void)
   uint16_t pixel;
   const uint8_t *src;
 
+  /* Each RGB chunk fills 48 pixels in one half of one physical lane. */
   if (comm_protocol_payload_len != COMM_PROTOCOL_CHUNK_PAYLOAD_LEN)
   {
     comm_protocol_transaction.severe_error = 1U;
@@ -495,6 +508,7 @@ static void CommProtocol_HandleFrameCommit(void)
   uint16_t frame_id;
   uint8_t status = COMM_PROTO_OK;
 
+  /* Commit validates completeness and fault state before applying outputs. */
   if (comm_protocol_payload_len != COMM_PROTOCOL_COMMIT_LEN)
   {
     status = COMM_PROTO_ERR_BAD_LENGTH;
@@ -554,6 +568,7 @@ static void CommProtocol_ApplyCommittedFrame(void)
   uint8_t lane;
   uint16_t pixel;
 
+  /* Copy the committed staging frame into the WS2812 output frame. */
   for (lane = 0U; lane < WS2812_BSR_LANES; lane++)
   {
     for (pixel = 0U; pixel < WS2812_BSR_LEDS_PER_LANE; pixel++)
@@ -593,6 +608,7 @@ static void CommProtocol_SendHelloResponse(uint16_t seq)
 {
   uint8_t payload[18];
 
+  /* HELLO tells the host board identity, geometry, and protocol limits. */
   CommProtocol_WriteU32(&payload[0], comm_protocol_uid_hash);
   payload[4] = COMM_PROTOCOL_ROLE_UNKNOWN;
   payload[5] = WS2812_BSR_LANES;
@@ -613,6 +629,7 @@ static void CommProtocol_SendStatusResponse(uint16_t seq)
   uint16_t flags = 0U;
   uint16_t offset = 0U;
 
+  /* STATUS is compact enough to fit the 128-byte transport TX buffer. */
   if (CurrentProtect_IsFaultActive() != 0U)
   {
     flags |= COMM_PROTOCOL_STATUS_FLAG_FAULT;
@@ -688,6 +705,7 @@ static void CommProtocol_SendPacket(uint8_t type, uint16_t seq, uint8_t flags, c
   uint16_t total_len;
   uint16_t index;
 
+  /* Build one complete framed response packet in a stack-local buffer. */
   total_len = (uint16_t)(2U + COMM_PROTOCOL_HEADER_SIZE + payload_len + COMM_PROTOCOL_CRC_SIZE);
   if ((payload_len > COMM_PROTOCOL_MAX_PAYLOAD) || (total_len > COMM_TX_BUFFER_SIZE))
   {

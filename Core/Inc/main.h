@@ -57,6 +57,8 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define SYNC_Pin GPIO_PIN_15
+#define SYNC_GPIO_Port GPIOC
 #define CH1_Pin GPIO_PIN_0
 #define CH1_GPIO_Port GPIOA
 #define CH2_Pin GPIO_PIN_1
@@ -75,12 +77,16 @@ void Error_Handler(void);
 #define CH8_GPIO_Port GPIOA
 #define RC_D3_Pin GPIO_PIN_1
 #define RC_D3_GPIO_Port GPIOB
+#define RC_D3_EXTI_IRQn EXTI1_IRQn
 #define RC_D2_Pin GPIO_PIN_2
 #define RC_D2_GPIO_Port GPIOB
+#define RC_D2_EXTI_IRQn EXTI2_IRQn
 #define RC_D1_Pin GPIO_PIN_10
 #define RC_D1_GPIO_Port GPIOB
+#define RC_D1_EXTI_IRQn EXTI15_10_IRQn
 #define RC_D0_Pin GPIO_PIN_11
 #define RC_D0_GPIO_Port GPIOB
+#define RC_D0_EXTI_IRQn EXTI15_10_IRQn
 #define SPI2_CS0_Pin GPIO_PIN_12
 #define SPI2_CS0_GPIO_Port GPIOB
 

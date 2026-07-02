@@ -5,6 +5,7 @@
 #include "usart.h"
 #include "usbd_cdc_if.h"
 
+/* Shared byte-stream transport for USB CDC and USART1 DMA RX. */
 #define COMM_UART_RX_DMA_CHANNEL       DMA1_Channel5
 
 extern USBD_HandleTypeDef hUsbDeviceFS;
@@ -18,6 +19,7 @@ typedef enum
 
 uint8_t comm_transport_rx_ring[COMM_RX_RING_SIZE];
 
+/* Watch variables are intentionally global for live debugger inspection. */
 volatile uint16_t comm_transport_watch_rx_write_index;
 volatile uint16_t comm_transport_watch_rx_read_index;
 volatile uint16_t comm_transport_watch_rx_used;
@@ -38,6 +40,7 @@ volatile uint32_t comm_transport_watch_tx_busy_drop_count;
 volatile uint32_t comm_transport_watch_tx_error_count;
 
 static DMA_HandleTypeDef comm_transport_hdma_usart1_rx;
+/* RX ring indexes are shared by USB ISR, UART DMA polling, and parser reads. */
 static volatile uint16_t comm_transport_rx_write_index;
 static volatile uint16_t comm_transport_rx_read_index;
 static volatile uint16_t comm_transport_rx_used;
@@ -54,6 +57,7 @@ static volatile uint8_t comm_transport_uart_dma_started;
 static CommTransportLink_t comm_transport_active_link;
 static uint16_t comm_transport_uart_dma_last_index;
 
+/* Only one small response can be pending; protocol responses are short. */
 static uint8_t comm_transport_tx_buffer[COMM_TX_BUFFER_SIZE];
 static uint16_t comm_transport_tx_len;
 static CommTransportTxState_t comm_transport_tx_state;
@@ -78,6 +82,7 @@ void CommTransport_Init(void)
 {
   uint32_t primask;
 
+  /* Runtime baud override avoids changing the generated USART init code. */
   huart1.Init.BaudRate = APP_COMM_UART_BAUD;
   if (HAL_UART_Init(&huart1) != HAL_OK)
   {
@@ -139,6 +144,7 @@ uint16_t CommTransport_WriteFromUsb(const uint8_t *data, uint16_t len)
 
   primask = CommTransport_EnterCritical();
 
+  /* USB callback copies bytes only; parsing stays in the main loop. */
   CommTransport_ActivateLink(COMM_TRANSPORT_LINK_USB, 1U);
   comm_transport_usb_packet_count++;
   comm_transport_rx_total_bytes += len;
@@ -180,6 +186,7 @@ uint16_t CommTransport_Read(uint8_t *data, uint16_t max_len)
     return 0U;
   }
 
+  /* UART DMA can advance while the parser drains bytes, so protect indexes. */
   primask = CommTransport_EnterCritical();
   CommTransport_UpdateUartDmaWriteIndex();
 
@@ -214,6 +221,7 @@ uint16_t CommTransport_Send(const uint8_t *data, uint16_t len)
   primask = CommTransport_EnterCritical();
   active_link = comm_transport_active_link;
 
+  /* Response path follows the currently active link selected by RX traffic. */
   if (active_link == COMM_TRANSPORT_LINK_USB)
   {
     if (comm_transport_tx_state != COMM_TX_IDLE)
@@ -366,6 +374,7 @@ static void CommTransport_ActivateLink(CommTransportLink_t link, uint8_t clear_o
     return;
   }
 
+  /* Switching links invalidates partial packets and frame transactions. */
   if (comm_transport_active_link != COMM_TRANSPORT_LINK_NONE)
   {
     comm_transport_link_switch_count++;
@@ -401,6 +410,7 @@ static uint8_t CommTransport_StartUartDma(void)
 {
   HAL_StatusTypeDef status;
 
+  /* USART1 RX uses DMA1 Channel5 in circular mode into the shared ring. */
   __HAL_RCC_DMA1_CLK_ENABLE();
 
   comm_transport_hdma_usart1_rx.Instance = COMM_UART_RX_DMA_CHANNEL;
@@ -446,6 +456,7 @@ static void CommTransport_UpdateUartDmaWriteIndex(void)
     return;
   }
 
+  /* Convert the DMA remaining count into producer progress in the RX ring. */
   dma_write_index = CommTransport_GetUartDmaWriteIndex();
   delta = CommTransport_Distance(comm_transport_uart_dma_last_index, dma_write_index);
 
@@ -543,6 +554,7 @@ static void CommTransport_PollTx(void)
     return;
   }
 
+  /* CDC clears TxState after the USB stack has accepted the IN transfer. */
   if ((comm_transport_tx_state == COMM_TX_USB_IN_FLIGHT) && (hcdc->TxState == 0U))
   {
     comm_transport_tx_state = COMM_TX_IDLE;

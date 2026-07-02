@@ -3,6 +3,7 @@
 #include "main.h"
 #include "app_config.h"
 
+/* Four-bit RC input reader: EXTI captures raw edges, Poll publishes debounced state. */
 #define REMOTE_INPUT_VALID_MASK  0x0FU
 
 /* Physical RC input map: bit0..bit3 are PB11, PB10, PB2, PB1. */
@@ -13,6 +14,7 @@ typedef struct
   uint8_t bit;
 } RemoteInput_PinMap_t;
 
+#if (APP_ENABLE_REMOTE_INPUT != 0U)
 static const RemoteInput_PinMap_t remote_input_pin_map[REMOTE_INPUT_CHANNEL_COUNT] =
 {
   {RC_D0_GPIO_Port, RC_D0_Pin, REMOTE_INPUT_D0_BIT},
@@ -20,6 +22,7 @@ static const RemoteInput_PinMap_t remote_input_pin_map[REMOTE_INPUT_CHANNEL_COUN
   {RC_D2_GPIO_Port, RC_D2_Pin, REMOTE_INPUT_D2_BIT},
   {RC_D3_GPIO_Port, RC_D3_Pin, REMOTE_INPUT_D3_BIT}
 };
+#endif
 
 volatile uint8_t remote_input_watch_raw_bits;
 volatile uint8_t remote_input_watch_stable_bits;
@@ -33,12 +36,15 @@ static uint8_t remote_input_changed_bits;
 static uint32_t remote_input_candidate_since_ms;
 static volatile uint32_t remote_input_edge_count[REMOTE_INPUT_CHANNEL_COUNT];
 
+#if (APP_ENABLE_REMOTE_INPUT != 0U)
 static uint8_t RemoteInput_SamplePins(void);
 static void RemoteInput_HandleExti(uint16_t gpio_pin);
+#endif
 static void RemoteInput_UpdateWatch(void);
 
 void RemoteInput_Init(void)
 {
+#if (APP_ENABLE_REMOTE_INPUT != 0U)
   /* Runtime EXTI setup keeps RC input behavior robust after CubeMX regeneration. */
   GPIO_InitTypeDef GPIO_InitStruct = {0};
   uint32_t channel;
@@ -74,10 +80,25 @@ void RemoteInput_Init(void)
   }
 
   RemoteInput_UpdateWatch();
+#else
+  uint32_t channel;
+
+  remote_input_raw_bits = 0U;
+  remote_input_candidate_bits = 0U;
+  remote_input_stable_bits = 0U;
+  remote_input_changed_bits = 0U;
+  remote_input_candidate_since_ms = 0U;
+  for (channel = 0U; channel < REMOTE_INPUT_CHANNEL_COUNT; channel++)
+  {
+    remote_input_edge_count[channel] = 0U;
+  }
+  RemoteInput_UpdateWatch();
+#endif
 }
 
 void RemoteInput_Poll(uint32_t now_ms)
 {
+#if (APP_ENABLE_REMOTE_INPUT != 0U)
   uint8_t raw_bits;
   uint8_t changed_bits;
 
@@ -109,20 +130,37 @@ void RemoteInput_Poll(uint32_t now_ms)
   remote_input_changed_bits = (uint8_t)((remote_input_changed_bits | changed_bits) & REMOTE_INPUT_VALID_MASK);
 
   RemoteInput_UpdateWatch();
+#else
+  (void)now_ms;
+  remote_input_raw_bits = 0U;
+  remote_input_candidate_bits = 0U;
+  remote_input_stable_bits = 0U;
+  remote_input_changed_bits = 0U;
+  RemoteInput_UpdateWatch();
+#endif
 }
 
 uint8_t RemoteInput_GetRawBits(void)
 {
+#if (APP_ENABLE_REMOTE_INPUT != 0U)
   return remote_input_raw_bits;
+#else
+  return 0U;
+#endif
 }
 
 uint8_t RemoteInput_GetStableBits(void)
 {
+#if (APP_ENABLE_REMOTE_INPUT != 0U)
   return remote_input_stable_bits;
+#else
+  return 0U;
+#endif
 }
 
 uint8_t RemoteInput_ConsumeChangedBits(void)
 {
+#if (APP_ENABLE_REMOTE_INPUT != 0U)
   /* Change flags are edge-like events consumed by higher-level logic. */
   uint8_t changed_bits = remote_input_changed_bits;
 
@@ -130,18 +168,29 @@ uint8_t RemoteInput_ConsumeChangedBits(void)
   RemoteInput_UpdateWatch();
 
   return changed_bits;
+#else
+  remote_input_changed_bits = 0U;
+  RemoteInput_UpdateWatch();
+  return 0U;
+#endif
 }
 
 uint32_t RemoteInput_GetEdgeCount(uint8_t channel)
 {
+#if (APP_ENABLE_REMOTE_INPUT != 0U)
   if (channel >= REMOTE_INPUT_CHANNEL_COUNT)
   {
     return 0U;
   }
 
   return remote_input_edge_count[channel];
+#else
+  (void)channel;
+  return 0U;
+#endif
 }
 
+#if (APP_ENABLE_REMOTE_INPUT != 0U)
 static uint8_t RemoteInput_SamplePins(void)
 {
   /* Convert GPIO pin states into the active-high logical bit mask. */
@@ -195,6 +244,12 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
   RemoteInput_HandleExti(GPIO_Pin);
 }
+#else
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+  (void)GPIO_Pin;
+}
+#endif
 
 static void RemoteInput_UpdateWatch(void)
 {

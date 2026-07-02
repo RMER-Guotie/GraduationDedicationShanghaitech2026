@@ -6,7 +6,9 @@
 #include "remote_input.h"
 #include "white_pwm.h"
 #include "ws2812_bsr_dma.h"
+#include "app_config.h"
 
+/* Top-level cooperative scheduler and safety arbiter for application modules. */
 volatile uint32_t app_controller_watch_loop_count;
 volatile uint8_t app_controller_watch_fault_active;
 volatile uint8_t app_controller_watch_rc_stable_bits;
@@ -21,9 +23,13 @@ void AppController_Init(void)
 {
   /* Keep generated main.c thin and initialize app modules in dependency order. */
   WS2812_BSR_Init();
+#if (APP_ENABLE_REMOTE_INPUT != 0U)
   RemoteInput_Init();
+#endif
   WhitePwm_Init();
+#if (APP_ENABLE_CURRENT_MONITOR != 0U) || (APP_ENABLE_CURRENT_PROTECT != 0U)
   CurrentProtect_Init();
+#endif
   CommTransport_Init();
   CommProtocol_Init();
 
@@ -39,8 +45,12 @@ void AppController_Poll(uint32_t now_ms)
 
   CommTransport_Poll(now_ms);
   CommProtocol_Poll(now_ms);
+#if (APP_ENABLE_REMOTE_INPUT != 0U)
   RemoteInput_Poll(now_ms);
+#endif
+#if (APP_ENABLE_CURRENT_MONITOR != 0U) || (APP_ENABLE_CURRENT_PROTECT != 0U)
   CurrentProtect_Poll(now_ms);
+#endif
   WhitePwm_Poll(now_ms);
 
   if (CurrentProtect_IsFaultActive() != 0U)

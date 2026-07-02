@@ -7,6 +7,13 @@
 
 extern ADC_HandleTypeDef hadc1;
 
+/* Periodic ADC current monitor with reset-latched fault output. */
+#if (APP_ENABLE_CURRENT_MONITOR != 0U) || (APP_ENABLE_CURRENT_PROTECT != 0U)
+#define CURRENT_PROTECT_ADC_ENABLED  1U
+#else
+#define CURRENT_PROTECT_ADC_ENABLED  0U
+#endif
+
 /* Debug watch values expose the latest protection state. */
 volatile uint16_t current_protect_watch_adc_raw;
 volatile uint32_t current_protect_watch_current_ma;
@@ -21,11 +28,15 @@ static uint32_t current_protect_trip_count;
 static uint8_t current_protect_fault_latched;
 static uint8_t current_protect_filter_seeded;
 
+#if (CURRENT_PROTECT_ADC_ENABLED != 0U)
 static void CurrentProtect_ConfigAdcChannel(void);
 static uint8_t CurrentProtect_ReadAdc(uint16_t *raw);
 static void CurrentProtect_UpdateFilter(uint16_t raw);
 static uint32_t CurrentProtect_AdcToCurrentMa(uint16_t raw);
+#endif
+#if (APP_ENABLE_CURRENT_PROTECT != 0U)
 static void CurrentProtect_UpdateFault(void);
+#endif
 static void CurrentProtect_UpdateWatch(void);
 
 void CurrentProtect_Init(void)
@@ -39,20 +50,25 @@ void CurrentProtect_Init(void)
   current_protect_fault_latched = 0U;
   current_protect_filter_seeded = 0U;
 
+#if (CURRENT_PROTECT_ADC_ENABLED != 0U)
   CurrentProtect_ConfigAdcChannel();
   (void)HAL_ADCEx_Calibration_Start(&hadc1);
+#endif
   CurrentProtect_UpdateWatch();
 }
 
 void CurrentProtect_Poll(uint32_t now_ms)
 {
+#if (CURRENT_PROTECT_ADC_ENABLED != 0U)
   uint16_t raw;
 
   /* Keep white outputs forced off after a latched fault until MCU reset. */
+#if (APP_ENABLE_CURRENT_PROTECT != 0U)
   if (current_protect_fault_latched != 0U)
   {
     WhitePwm_Off();
   }
+#endif
 
   if ((now_ms - current_protect_last_sample_ms) < APP_CURRENT_PROTECT_SAMPLE_MS)
   {
@@ -69,13 +85,28 @@ void CurrentProtect_Poll(uint32_t now_ms)
   current_protect_adc_raw = raw;
   CurrentProtect_UpdateFilter(raw);
   current_protect_current_ma = CurrentProtect_AdcToCurrentMa((uint16_t)(current_protect_filtered_adc_q4 >> 4U));
+#if (APP_ENABLE_CURRENT_PROTECT != 0U)
   CurrentProtect_UpdateFault();
+#else
+  current_protect_fault_latched = 0U;
+#endif
   CurrentProtect_UpdateWatch();
+#else
+  (void)now_ms;
+  current_protect_adc_raw = 0U;
+  current_protect_current_ma = 0U;
+  current_protect_fault_latched = 0U;
+  CurrentProtect_UpdateWatch();
+#endif
 }
 
 uint8_t CurrentProtect_IsFaultActive(void)
 {
+#if (APP_ENABLE_CURRENT_PROTECT != 0U)
   return current_protect_fault_latched;
+#else
+  return 0U;
+#endif
 }
 
 uint16_t CurrentProtect_GetAdcRaw(void)
@@ -85,9 +116,14 @@ uint16_t CurrentProtect_GetAdcRaw(void)
 
 uint32_t CurrentProtect_GetCurrentMa(void)
 {
+#if (CURRENT_PROTECT_ADC_ENABLED != 0U)
   return current_protect_current_ma;
+#else
+  return 0U;
+#endif
 }
 
+#if (CURRENT_PROTECT_ADC_ENABLED != 0U)
 static void CurrentProtect_ConfigAdcChannel(void)
 {
   /* Reapply the expected PB0/ADC1_IN8 channel in case generated code changes. */
@@ -150,7 +186,9 @@ static uint32_t CurrentProtect_AdcToCurrentMa(uint16_t raw)
 
   return (uint32_t)((numerator + (denominator / 2ULL)) / denominator);
 }
+#endif
 
+#if (APP_ENABLE_CURRENT_PROTECT != 0U)
 static void CurrentProtect_UpdateFault(void)
 {
   /* Overcurrent is latched until MCU reset; no software auto-release path. */
@@ -168,6 +206,7 @@ static void CurrentProtect_UpdateFault(void)
     WhitePwm_Off();
   }
 }
+#endif
 
 static void CurrentProtect_UpdateWatch(void)
 {

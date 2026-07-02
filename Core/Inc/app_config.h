@@ -6,6 +6,7 @@
 #define APP_RC_PULL_MODE            GPIO_PULLDOWN
 #define APP_RC_DEBOUNCE_MS          5U
 #define APP_TEST_RC_STATUS_ENABLE   1U
+#define APP_ENABLE_REMOTE_INPUT     0U
 
 /* White LED PWM scaling and smoothing settings. */
 #define APP_WHITE_PWM_MAX_LEVEL      1000U
@@ -16,6 +17,8 @@
 #define APP_TEST_WHITE_PWM_ENABLE    1U
 
 /* Current protection sampling, conversion, and latch settings. */
+#define APP_ENABLE_CURRENT_MONITOR        0U
+#define APP_ENABLE_CURRENT_PROTECT        0U
 #define APP_CURRENT_PROTECT_SAMPLE_MS     5U
 #define APP_CURRENT_PROTECT_TRIP_MA       16000U
 #define APP_CURRENT_SENSE_SHUNT_UOHM      500U

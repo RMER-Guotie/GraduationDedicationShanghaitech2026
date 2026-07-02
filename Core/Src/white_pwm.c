@@ -5,6 +5,7 @@
 
 extern TIM_HandleTypeDef htim1;
 
+/* TIM1 CH1/CH2 white-channel dimmer with smoothed normal updates. */
 #define WHITE_PWM_WW_TIM_CHANNEL  TIM_CHANNEL_1
 #define WHITE_PWM_CW_TIM_CHANNEL  TIM_CHANNEL_2
 
