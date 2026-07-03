@@ -16,6 +16,9 @@
 #define APP_WHITE_PWM_TIM1_ARR       3599U
 #define APP_TEST_WHITE_PWM_ENABLE    1U
 
+/* Temporary old-PCB bring-up: only PA0..PA3 are safe WS2812 outputs. */
+#define APP_WS2812_ACTIVE_LANES      4U
+
 /* Current protection sampling, conversion, and latch settings. */
 #define APP_ENABLE_CURRENT_MONITOR        0U
 #define APP_ENABLE_CURRENT_PROTECT        0U

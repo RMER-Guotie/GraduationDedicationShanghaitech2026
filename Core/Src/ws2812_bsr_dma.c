@@ -1,5 +1,6 @@
 #include "ws2812_bsr_dma.h"
 
+#include "app_config.h"
 #include "main.h"
 #include "tim.h"
 
@@ -18,9 +19,66 @@
 
 #define WS2812_BSR_SET(mask)           ((uint32_t)(mask))
 #define WS2812_BSR_RESET(mask)         ((uint32_t)(mask) << 16U)
-/* All WS2812 lanes are driven together through GPIOA BSRR writes. */
+
+#if APP_WS2812_ACTIVE_LANES > WS2812_BSR_LANES
+#error "APP_WS2812_ACTIVE_LANES must not exceed WS2812_BSR_LANES"
+#endif
+
+#if APP_WS2812_ACTIVE_LANES >= 5U
+#define WS2812_BSR_CH5_MASK            CH5_Pin
+#else
+#define WS2812_BSR_CH5_MASK            0U
+#endif
+
+#if APP_WS2812_ACTIVE_LANES >= 6U
+#define WS2812_BSR_CH6_MASK            CH6_Pin
+#else
+#define WS2812_BSR_CH6_MASK            0U
+#endif
+
+#if APP_WS2812_ACTIVE_LANES >= 7U
+#define WS2812_BSR_CH7_MASK            CH7_Pin
+#else
+#define WS2812_BSR_CH7_MASK            0U
+#endif
+
+#if APP_WS2812_ACTIVE_LANES >= 8U
+#define WS2812_BSR_CH8_MASK            CH8_Pin
+#else
+#define WS2812_BSR_CH8_MASK            0U
+#endif
+
+#if APP_WS2812_ACTIVE_LANES < 5U
+#define WS2812_BSR_UNUSED_PA4_MASK     GPIO_PIN_4
+#else
+#define WS2812_BSR_UNUSED_PA4_MASK     0U
+#endif
+
+#if APP_WS2812_ACTIVE_LANES < 6U
+#define WS2812_BSR_UNUSED_PA5_MASK     GPIO_PIN_5
+#else
+#define WS2812_BSR_UNUSED_PA5_MASK     0U
+#endif
+
+#if APP_WS2812_ACTIVE_LANES < 7U
+#define WS2812_BSR_UNUSED_PA6_MASK     GPIO_PIN_6
+#else
+#define WS2812_BSR_UNUSED_PA6_MASK     0U
+#endif
+
+#if APP_WS2812_ACTIVE_LANES < 8U
+#define WS2812_BSR_UNUSED_PA7_MASK     GPIO_PIN_7
+#else
+#define WS2812_BSR_UNUSED_PA7_MASK     0U
+#endif
+
+#define WS2812_BSR_UNUSED_MASK         ((uint16_t)(WS2812_BSR_UNUSED_PA4_MASK | WS2812_BSR_UNUSED_PA5_MASK | \
+                                                   WS2812_BSR_UNUSED_PA6_MASK | WS2812_BSR_UNUSED_PA7_MASK))
+
+/* Only physically enabled lanes are driven through GPIOA BSRR writes. */
 #define WS2812_BSR_ACTIVE_MASK         ((uint16_t)(CH1_Pin | CH2_Pin | CH3_Pin | CH4_Pin | \
-                                                   CH5_Pin | CH6_Pin | CH7_Pin | CH8_Pin))
+                                                   WS2812_BSR_CH5_MASK | WS2812_BSR_CH6_MASK | \
+                                                   WS2812_BSR_CH7_MASK | WS2812_BSR_CH8_MASK))
 
 typedef struct
 {
@@ -37,10 +95,10 @@ static const uint16_t ws2812_lane_pin_mask[WS2812_BSR_LANES] =
   CH2_Pin,
   CH3_Pin,
   CH4_Pin,
-  CH5_Pin,
-  CH6_Pin,
-  CH7_Pin,
-  CH8_Pin
+  WS2812_BSR_CH5_MASK,
+  WS2812_BSR_CH6_MASK,
+  WS2812_BSR_CH7_MASK,
+  WS2812_BSR_CH8_MASK
 };
 
 static WS2812_BSR_RGB888_t ws2812_frame[WS2812_BSR_LANES][WS2812_BSR_LEDS_PER_LANE];
@@ -388,7 +446,7 @@ void DMA1_Channel4_IRQHandler(void)
 
 static void WS2812_BSR_InitGpio(void)
 {
-  /* PA0..PA7 are normal push-pull outputs for BSRR DMA driving. */
+  /* Active lanes are normal push-pull outputs for BSRR DMA driving. */
   GPIO_InitTypeDef GPIO_InitStruct = {0};
 
   __HAL_RCC_GPIOA_CLK_ENABLE();
@@ -398,6 +456,14 @@ static void WS2812_BSR_InitGpio(void)
   GPIO_InitStruct.Pull = 0U;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+#if APP_WS2812_ACTIVE_LANES < 8U
+  /* Keep old-PCB-conflicting PA4..PA7 pins electrically passive. */
+  GPIO_InitStruct.Pin = WS2812_BSR_UNUSED_MASK;
+  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+#endif
 }
 
 static HAL_StatusTypeDef WS2812_BSR_InitDmaHandle(DMA_HandleTypeDef *hdma, DMA_Channel_TypeDef *channel, uint32_t mem_inc)
