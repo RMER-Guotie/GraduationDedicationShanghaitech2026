@@ -117,6 +117,8 @@ volatile uint32_t ws2812_bsr_diag_error_count;
 volatile uint32_t ws2812_bsr_diag_timeout_count;
 volatile uint32_t ws2812_bsr_diag_start_error_count;
 volatile uint32_t ws2812_bsr_diag_poll_complete_count;
+volatile uint32_t ws2812_bsr_diag_fps;
+volatile uint32_t ws2812_bsr_diag_fps_window_ms;
 volatile uint32_t ws2812_show_count_watch;
 volatile uint32_t ws2812_complete_count_watch;
 
@@ -125,6 +127,8 @@ static volatile uint8_t ws2812_busy;
 static volatile uint8_t ws2812_dma_done;
 static volatile uint32_t ws2812_latch_start_tick;
 static uint32_t ws2812_show_start_tick;
+static uint32_t ws2812_fps_last_tick;
+static uint32_t ws2812_fps_last_complete_count;
 static uint32_t ws2812_test_last_show_ms;
 static uint8_t ws2812_test_base_hue;
 static uint8_t ws2812_test_breath;
@@ -145,6 +149,7 @@ static void WS2812_BSR_DmaErrorCallback(DMA_HandleTypeDef *hdma);
 static void WS2812_BSR_CleanupCompletedDma(void);
 static void WS2812_BSR_AbortDma(void);
 static void WS2812_BSR_MarkDmaDone(void);
+static void WS2812_BSR_UpdateFps(void);
 static void WS2812_BSR_DemoColorWheel(uint8_t hue, uint8_t brightness, uint8_t *r, uint8_t *g, uint8_t *b);
 
 void WS2812_BSR_Init(void)
@@ -189,6 +194,8 @@ void WS2812_BSR_Init(void)
   ws2812_dma_done = 0U;
   ws2812_latch_start_tick = 0U;
   ws2812_show_start_tick = 0U;
+  ws2812_fps_last_tick = HAL_GetTick();
+  ws2812_fps_last_complete_count = 0U;
   ws2812_initialized = 1U;
 }
 
@@ -344,6 +351,7 @@ void WS2812_BSR_Poll(void)
   {
     ws2812_bsr_diag_poll_complete_count++;
     ws2812_complete_count_watch = ws2812_bsr_diag_complete_count + ws2812_bsr_diag_poll_complete_count;
+    WS2812_BSR_UpdateFps();
     WS2812_BSR_CleanupCompletedDma();
     WS2812_BSR_MarkDmaDone();
     return;
@@ -588,6 +596,7 @@ static void WS2812_BSR_DmaCompleteCallback(DMA_HandleTypeDef *hdma)
   WS2812_BSR_CleanupCompletedDma();
   ws2812_bsr_diag_complete_count++;
   ws2812_complete_count_watch = ws2812_bsr_diag_complete_count + ws2812_bsr_diag_poll_complete_count;
+  WS2812_BSR_UpdateFps();
   WS2812_BSR_MarkDmaDone();
 }
 
@@ -623,6 +632,23 @@ static void WS2812_BSR_MarkDmaDone(void)
   GPIOA->BSRR = WS2812_BSR_RESET(WS2812_BSR_ACTIVE_MASK);
   ws2812_latch_start_tick = HAL_GetTick();
   ws2812_dma_done = 1U;
+}
+
+static void WS2812_BSR_UpdateFps(void)
+{
+  uint32_t now_ms = HAL_GetTick();
+  uint32_t elapsed_ms = now_ms - ws2812_fps_last_tick;
+
+  if (elapsed_ms >= 1000U)
+  {
+    uint32_t complete_count = ws2812_bsr_diag_complete_count + ws2812_bsr_diag_poll_complete_count;
+    uint32_t delta_count = complete_count - ws2812_fps_last_complete_count;
+
+    ws2812_bsr_diag_fps = (delta_count * 1000U) / elapsed_ms;
+    ws2812_bsr_diag_fps_window_ms = elapsed_ms;
+    ws2812_fps_last_complete_count = complete_count;
+    ws2812_fps_last_tick = now_ms;
+  }
 }
 
 static void WS2812_BSR_DemoColorWheel(uint8_t hue, uint8_t brightness, uint8_t *r, uint8_t *g, uint8_t *b)

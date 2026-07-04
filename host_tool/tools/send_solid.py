@@ -13,12 +13,13 @@ def main() -> int:
     parser.add_argument("--rgb", nargs=3, type=int, metavar=("R", "G", "B"), required=True)
     parser.add_argument("--ww", type=int, default=0, help="Warm white level 0..1000")
     parser.add_argument("--cw", type=int, default=0, help="Cold white level 0..1000")
+    parser.add_argument("--chunk-delay-ms", type=float, default=2.0, help="Delay after FRAME_BEGIN and each RGB chunk")
     args = parser.parse_args()
 
     r, g, b = args.rgb
     device = open_device(args)
     try:
-        print_commit(device.send_solid(r, g, b, ww=args.ww, cw=args.cw))
+        print_commit(device.send_solid(r, g, b, ww=args.ww, cw=args.cw, chunk_delay_s=args.chunk_delay_ms / 1000.0))
     finally:
         close_device(device)
     return 0

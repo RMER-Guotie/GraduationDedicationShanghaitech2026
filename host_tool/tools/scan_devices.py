@@ -11,7 +11,7 @@ from .common import print_hello
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Scan COM ports for Pixel Controller devices")
-    parser.add_argument("--baud", type=int, default=921600)
+    parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--timeout", type=float, default=0.5)
     parser.add_argument("--ports", nargs="*", help="Optional explicit port list")
     args = parser.parse_args()

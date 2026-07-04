@@ -46,6 +46,8 @@ STATUS_FLAG_FAULT = 0x0001
 STATUS_FLAG_PENDING = 0x0002
 STATUS_FLAG_HOST = 0x0004
 STATUS_FLAG_TXN = 0x0008
+STATUS_RSP_FORMAT = "<HBBHHHIIIHHII"
+STATUS_RSP_SIZE = struct.calcsize(STATUS_RSP_FORMAT)
 
 
 class ProtocolError(Exception):
@@ -286,9 +288,9 @@ def parse_hello_response(packet: Packet) -> HelloResponse:
 def parse_status_response(packet: Packet) -> StatusResponse:
     if packet.msg_type != STATUS_RSP:
         raise ProtocolError(f"expected STATUS_RSP, got 0x{packet.msg_type:02x}")
-    if len(packet.payload) != 36:
+    if len(packet.payload) != STATUS_RSP_SIZE:
         raise ProtocolError(f"bad STATUS_RSP length {len(packet.payload)}")
-    values = struct.unpack("<HBBHHHIIIHHII", packet.payload)
+    values = struct.unpack(STATUS_RSP_FORMAT, packet.payload)
     return StatusResponse(*values)
 
 

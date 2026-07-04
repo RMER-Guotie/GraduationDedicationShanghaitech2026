@@ -64,7 +64,7 @@ class MainWindow(QMainWindow):
         self.port_combo.setMinimumWidth(180)
         self.baud_spin = QSpinBox()
         self.baud_spin.setRange(1200, 4000000)
-        self.baud_spin.setValue(921600)
+        self.baud_spin.setValue(115200)
         self.baud_spin.setSingleStep(115200)
 
         self.refresh_button = QPushButton("Refresh")
@@ -330,4 +330,3 @@ def run() -> int:
     window = MainWindow()
     window.show()
     return app.exec()
-

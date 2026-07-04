@@ -37,4 +37,10 @@
 #define APP_COMM_UART_TX_TIMEOUT_MS       2U
 #define APP_COMM_LONG_TIMEOUT_MS          10000U
 
+/* CAN is not used by the controller and must not share the USB IRQ path. */
+#define APP_ENABLE_CAN                    0U
+
+/* Minimal USB enumeration mode for old-PCB hardware bring-up. */
+#define APP_USB_ONLY_BRINGUP              0U
+
 #endif /* APP_CONFIG_H */

@@ -22,6 +22,7 @@
 #include "stm32f1xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "app_config.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -58,6 +59,13 @@
 extern PCD_HandleTypeDef hpcd_USB_FS;
 extern CAN_HandleTypeDef hcan;
 /* USER CODE BEGIN EV */
+extern volatile uint32_t usb_dbg_irq_count;
+extern volatile uint32_t usb_dbg_irq_before_istr;
+extern volatile uint32_t usb_dbg_irq_before_ep0r;
+extern volatile uint32_t usb_dbg_irq_before_daddr;
+extern volatile uint32_t usb_dbg_irq_before_cntr;
+extern volatile uint32_t usb_dbg_irq_after_istr;
+extern volatile uint32_t usb_dbg_irq_after_ep0r;
 
 /* USER CODE END EV */
 
@@ -233,11 +241,23 @@ void EXTI2_IRQHandler(void)
 void USB_LP_CAN1_RX0_IRQHandler(void)
 {
   /* USER CODE BEGIN USB_LP_CAN1_RX0_IRQn 0 */
+  usb_dbg_irq_count++;
+  usb_dbg_irq_before_istr = USB->ISTR;
+  usb_dbg_irq_before_ep0r = USB->EP0R;
+  usb_dbg_irq_before_daddr = USB->DADDR;
+  usb_dbg_irq_before_cntr = USB->CNTR;
 
   /* USER CODE END USB_LP_CAN1_RX0_IRQn 0 */
-  HAL_CAN_IRQHandler(&hcan);
   HAL_PCD_IRQHandler(&hpcd_USB_FS);
+#if APP_ENABLE_CAN
+  if (hcan.Instance != 0)
+  {
+    HAL_CAN_IRQHandler(&hcan);
+  }
+#endif
   /* USER CODE BEGIN USB_LP_CAN1_RX0_IRQn 1 */
+  usb_dbg_irq_after_istr = USB->ISTR;
+  usb_dbg_irq_after_ep0r = USB->EP0R;
 
   /* USER CODE END USB_LP_CAN1_RX0_IRQn 1 */
 }

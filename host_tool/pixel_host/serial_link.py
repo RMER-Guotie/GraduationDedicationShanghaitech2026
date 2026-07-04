@@ -32,7 +32,7 @@ def list_serial_ports() -> list[str]:
 class SerialLink(AbstractContextManager["SerialLink"]):
     """Small blocking serial link wrapper with an incremental packet parser."""
 
-    def __init__(self, port: str, baudrate: int = 921600, timeout: float = 0.05) -> None:
+    def __init__(self, port: str, baudrate: int = 115200, timeout: float = 0.05) -> None:
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout

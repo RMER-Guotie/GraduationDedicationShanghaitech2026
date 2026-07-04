@@ -28,6 +28,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "app_config.h"
 #include "app_controller.h"
 
 /* USER CODE END Includes */
@@ -92,17 +93,25 @@ int main(void)
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
+#if APP_USB_ONLY_BRINGUP
+  MX_USB_DEVICE_Init();
+#else
   MX_GPIO_Init();
   MX_TIM1_Init();
   MX_TIM4_Init();
   MX_USART1_UART_Init();
   MX_USB_DEVICE_Init();
   MX_ADC1_Init();
+#if APP_ENABLE_CAN
   MX_CAN_Init();
+#endif
   MX_SPI2_Init();
+#endif
   /* USER CODE BEGIN 2 */
+#if !APP_USB_ONLY_BRINGUP
   /* Initialize application drivers after CubeMX peripheral setup. */
   AppController_Init();
+#endif
 
   /* USER CODE END 2 */
 
@@ -113,8 +122,12 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+#if APP_USB_ONLY_BRINGUP
+    HAL_Delay(1);
+#else
     AppController_Poll(HAL_GetTick());
     HAL_Delay(1);
+#endif
   }
   /* USER CODE END 3 */
 }

@@ -43,20 +43,27 @@ class PixelDevice:
         packet = self.link.transact(proto.build_all_black(seq), timeout=self.response_timeout, expected_seq=seq)
         return proto.parse_status_response(packet)
 
-    def send_frame(self, frame_rgb: bytes, ww: int = 0, cw: int = 0) -> CommitResponse:
+    def send_frame(self, frame_rgb: bytes, ww: int = 0, cw: int = 0, chunk_delay_s: float = 0.002) -> CommitResponse:
         """Send one full 8x96 RGB frame and return the commit response."""
         frame_id = self.next_frame_id()
 
         seq = self.next_seq()
         self.link.write(proto.build_frame_begin(seq, frame_id, ww=ww, cw=cw))
+        self._pace_chunks(chunk_delay_s)
 
         for chunk_index, chunk_data in proto.iter_frame_chunks(frame_rgb):
             seq = self.next_seq()
             self.link.write(proto.build_frame_chunk(seq, frame_id, chunk_index, chunk_data))
+            self._pace_chunks(chunk_delay_s)
 
         seq = self.next_seq()
         packet = self.link.transact(proto.build_frame_commit(seq, frame_id), timeout=self.response_timeout, expected_seq=seq)
         return proto.parse_commit_response(packet)
 
-    def send_solid(self, r: int, g: int, b: int, ww: int = 0, cw: int = 0) -> CommitResponse:
-        return self.send_frame(proto.solid_frame_rgb(r, g, b), ww=ww, cw=cw)
+    def send_solid(self, r: int, g: int, b: int, ww: int = 0, cw: int = 0, chunk_delay_s: float = 0.002) -> CommitResponse:
+        return self.send_frame(proto.solid_frame_rgb(r, g, b), ww=ww, cw=cw, chunk_delay_s=chunk_delay_s)
+
+    @staticmethod
+    def _pace_chunks(chunk_delay_s: float) -> None:
+        if chunk_delay_s > 0.0:
+            time.sleep(chunk_delay_s)

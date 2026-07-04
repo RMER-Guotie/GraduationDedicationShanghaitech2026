@@ -13,7 +13,7 @@ from pixel_host import protocol as proto
 
 def add_port_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("port", help="Serial port, for example COM5")
-    parser.add_argument("--baud", type=int, default=921600, help="Serial baud rate")
+    parser.add_argument("--baud", type=int, default=115200, help="Serial baud rate")
     parser.add_argument("--timeout", type=float, default=1.0, help="Response timeout in seconds")
 
 

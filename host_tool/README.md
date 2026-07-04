@@ -20,9 +20,14 @@ python -m tools.scan_devices
 python -m tools.status COM5
 python -m tools.all_black COM5
 python -m tools.send_solid COM5 --rgb 255 0 0 --ww 0 --cw 0
+python -m tools.send_solid COM5 --rgb 0 255 0 --chunk-delay-ms 5
 ```
 
-Default serial settings are `921600 8N1`, matching the current firmware.
+Default serial settings are `115200 8N1`. USB CDC ignores the physical baud
+rate, but this value works reliably with the current Windows CDC driver.
+Full-frame writes are paced by default with a 2 ms delay after `FRAME_BEGIN` and
+each RGB chunk so the current 256-byte downstream RX ring is not overrun during
+bring-up.
 
 ## GUI Usage
 
