@@ -7,7 +7,7 @@ extern "C" {
 
 #include <stdint.h>
 
-#define COMM_RX_RING_SIZE  256U
+#define COMM_RX_RING_SIZE  1024U
 #define COMM_TX_BUFFER_SIZE 128U
 
 typedef enum

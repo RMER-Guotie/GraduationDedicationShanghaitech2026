@@ -12,7 +12,7 @@ from .protocol import CommitResponse, HelloResponse, StatusResponse
 from .serial_link import SerialLink
 
 PRECISE_SLEEP_THRESHOLD_S = 0.005
-DEFAULT_CHUNK_DELAY_S = 0.00175
+DEFAULT_CHUNK_DELAY_S = 0.0
 
 
 @dataclass

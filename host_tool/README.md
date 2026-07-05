@@ -25,9 +25,8 @@ python -m tools.send_solid COM5 --rgb 0 255 0 --chunk-delay-ms 5
 
 Default serial settings are `115200 8N1`. USB CDC ignores the physical baud
 rate, but this value works reliably with the current Windows CDC driver.
-Full-frame writes are paced by default with a 2 ms delay after `FRAME_BEGIN` and
-each RGB chunk so the current 256-byte downstream RX ring is not overrun during
-bring-up.
+Full-frame writes use no default chunk delay after the 2-chunk protocol and
+1024-byte downstream RX ring were validated at about 60 fps.
 
 ## GUI Usage
 
@@ -59,12 +58,12 @@ It is sent as:
 
 ```text
 FRAME_BEGIN
-8 * FRAME_RGB_CHUNK
+2 * FRAME_RGB_CHUNK
 FRAME_COMMIT
 ```
 
-Each chunk contains 48 RGB pixels, or 144 bytes. Chunk mapping is lane-major:
-chunk 0 is lane 0 logical pixels 0..47, chunk 1 is lane 1, and so on.
+Each chunk contains four complete logical lanes, or 576 RGB bytes. Chunk 0
+contains lanes 0..3, and chunk 1 contains lanes 4..7.
 
 ## Device Identity
 

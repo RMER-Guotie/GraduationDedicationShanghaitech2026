@@ -336,7 +336,7 @@ Behavior:
 - Defines a statically allocated shared RX ring:
 
 ```c
-#define COMM_RX_RING_SIZE  256U
+#define COMM_RX_RING_SIZE  1024U
 uint8_t comm_transport_rx_ring[COMM_RX_RING_SIZE];
 ```
 
@@ -345,7 +345,7 @@ uint8_t comm_transport_rx_ring[COMM_RX_RING_SIZE];
 - No protocol parsing, frame transaction handling, or lighting output update is
   done in the USB callback.
 - UART RX uses USART1 RX DMA1 Channel5 in circular mode and writes directly into
-  the same `comm_transport_rx_ring[256]`.
+  the same `comm_transport_rx_ring[1024]`.
 - USART1 baud is overridden at runtime to `APP_COMM_UART_BAUD = 921600`; `.ioc`
   was not changed for this step.
 - UART TX does not use DMA. Small responses use blocking `HAL_UART_Transmit()`.
@@ -441,18 +441,17 @@ WAIT_SYNC0 -> WAIT_SYNC1 -> READ_HEADER -> READ_PAYLOAD -> READ_CRC0 -> READ_CRC
   `HELLO_RSP`; `role_id` is currently `0xFF` / unknown.
 - A statically allocated staging RGB frame stores one uncommitted `8 x 48 x RGB`
   logical frame, adding `1152 bytes` RAM.
-- One full frame uses 8 chunks. Each chunk carries 144 bytes = 48 RGB pixels.
+- One full frame currently uses 2 chunks. Each chunk carries 576 bytes =
+  four complete logical lanes.
 - Chunk mapping is lane-major:
-  - chunk 0 -> lane 0 logical pixels 0..47,
-  - chunk 1 -> lane 1 logical pixels 0..47,
-  - ...
-  - chunk 7 -> lane 7 logical pixels 0..47.
+  - chunk 0 -> lanes 0..3 logical pixels 0..47,
+  - chunk 1 -> lanes 4..7 logical pixels 0..47.
 - On commit, firmware maps each logical pixel to two physical WS2812B pixels:
   physical indices `2n` and `2n + 1`.
 - `FRAME_BEGIN` records frame ID, chunk count, WW/CW metadata, and optional
   frame CRC32. The current first version stores but does not verify frame CRC32.
 - CRC-valid chunks write only into the staging frame and update `received_mask`.
-- `FRAME_COMMIT` succeeds only when frame ID matches, all 8 chunks are received,
+- `FRAME_COMMIT` succeeds only when frame ID matches, both chunks are received,
   no severe transaction error is active, and overcurrent fault is inactive.
 - Successful commit copies staging RGB into the WS2812 software frame, applies
   WW/CW target levels, and triggers WS2812 output. If WS2812 DMA is busy, it
@@ -624,7 +623,7 @@ separate authorization.
 - The first version uses one statically allocated shared RX ring:
 
 ```c
-#define COMM_RX_RING_SIZE  256U
+#define COMM_RX_RING_SIZE  1024U
 ```
 
 - USB writes received bytes into this ring by software copy.
@@ -643,10 +642,10 @@ Bandwidth estimate:
   each controller's own `8 x 48` logical frame by device identity.
 - Firmware expands each logical pixel to two physical WS2812B LEDs.
 - With protocol overhead, estimate about `1250..1350 bytes/frame`.
-- At `60 fps`, input is about `75..81 KB/s`; a 256-byte RX ring covers about
-  `3.1 ms`.
-- At `120 fps`, input is about `150..162 KB/s`; a 256-byte RX ring covers about
-  `1.6 ms`.
+- At `60 fps`, input is about `75..81 KB/s`; a 1024-byte RX ring covers about
+  `12.6 ms`.
+- At `120 fps`, input is about `150..162 KB/s`; a 1024-byte RX ring covers about
+  `6.3 ms`.
 - Therefore `60 fps` is the guaranteed design target. `120 fps` is only a stress
   estimate and requires the main loop to drain communication data very often.
 
@@ -714,10 +713,10 @@ Frame transaction rules:
   not verify frame CRC32.
 - WW/CW white levels are stored as frame metadata and take effect only after a
   successful `FRAME_COMMIT`.
-- Each RGB chunk is planned as 144 bytes, representing 48 RGB LEDs.
-- One full frame has 8 RGB chunks.
+- Each RGB chunk is planned as 576 bytes, representing four complete logical lanes.
+- One full frame has 2 RGB chunks.
 - CRC-valid chunks are written to the back/staging frame at their target offset.
-- A `received_mask` tracks the 8 chunks.
+- A `received_mask` tracks the 2 chunks.
 - `FRAME_COMMIT` is accepted only when frame ID matches, all chunks are received,
   and no severe transaction error is active.
 - `COMM_PROTOCOL.md` is the host-facing protocol handoff document.
@@ -758,8 +757,8 @@ Current scope:
   - sync `0x5A 0xA5`,
   - protocol version `1`,
   - CRC16-CCITT-FALSE,
-  - 8 RGB chunks per full frame,
-  - each RGB chunk carries 144 bytes / 48 pixels,
+  - 2 RGB chunks per full frame,
+  - each RGB chunk carries 576 bytes / four complete logical lanes,
   - lane-major `8 x 48` logical mapping.
 - Implemented CLI commands:
 
@@ -830,9 +829,9 @@ Closed-loop throughput validation on USB CDC virtual COM:
 1.00 ms and below: timeout or severe errors
 ```
 
-- After reducing the protocol to `8 x 48` logical pixels, HELLO reports
-  `leds_per_lane = 48`, `chunk_count = 8`, and successful full-frame commits
-  return `received_mask = 0x00ff`.
+- After reducing the protocol to `8 x 48` logical pixels, HELLO initially
+  reported `leds_per_lane = 48`, `chunk_count = 8`, and successful full-frame
+  commits returned `received_mask = 0x00ff`.
 - Bench stress results for `8 x 48` logical full-frame closed-loop streaming:
 
 ```text
@@ -844,21 +843,29 @@ Closed-loop throughput validation on USB CDC virtual COM:
 1.00 ms and below: timeout or severe errors
 ```
 
+- Current protocol reduces the same `8 x 48` logical frame to 2 half-frame
+  chunks, with `chunk_rgb_bytes = 576`, `max_payload = 640`, and
+  `COMM_RX_RING_SIZE = 1024`. Successful commits return `received_mask = 0x0003`.
+- Bench stress results for this 2-chunk protocol were stable with no errors from
+  `2.00 ms` chunk delay down to `0.00 ms`. At `0.00 ms`, the GUI measured about
+  `61.2 fps`, `avg_frame = 15.7 ms`, `avg_chunks = 4.1 ms`,
+  `avg_pacing = 0.0 ms`, and `avg_wait_rsp = 11.3 ms`.
+- Estimated RAM increase for this protocol is about `1248 bytes`
+  (`comm_protocol_payload +480`, `comm_transport_rx_ring +768`), leaving only
+  about `32 bytes` of link-time SRAM margin based on the last map file. If Keil
+  linking fails or stack safety becomes suspect, the next candidate is to remove
+  `comm_protocol_staging_frame[1152]` or reduce the RX ring.
+
 - Current GUI defaults are therefore:
-  - default chunk delay: `1.75 ms`,
-  - default breath target: `30 fps`.
-- This is a stable closed-loop bench-control setting, not the final high-frame-
-  rate architecture.
-- Reaching 60 fps full-frame updates likely requires protocol/scheduler changes,
-  such as fewer packets per frame, reduced or periodic ACKs, improved parser
-  drain cadence, or a streaming/ping-pong frame model.
+  - default chunk delay: `0 ms`,
+  - default breath target: `60 fps`.
+- This is the current validated closed-loop bench-control setting.
 
 Current limitations:
 
 - No persistent multi-board role mapping beyond the example JSON file.
 - Current live GUI stream is closed-loop and waits for a commit response per
-  frame, so the stable bench rate is about 30 fps after the `8 x 48` logical
-  protocol reduction.
+  frame; the 2-chunk protocol has been validated at about 60 fps.
 - No automatic dependency installation has been run.
 - GUI operations are currently synchronous and intended for bench debug, not
   high-rate streaming.
@@ -979,7 +986,7 @@ descriptor buffer size, or the frame-staging strategy.
 6. WS2812 fault handling now uses `WS2812_BSR_ForceBlack()` on fault entry, then retransmits an all-black frame whenever idle.
 7. USB/UART protocol code now compiles in Keil with 0 errors and 0 warnings, but
    it still needs bench/host-side communication testing.
-8. UART RX DMA writes directly into the shared 256-byte RX ring. This relies on
+8. UART RX DMA writes directly into the shared 1024-byte RX ring. This relies on
    the confirmed hardware usage that only USB or UART is active at one time.
 9. The first protocol implementation stores `frame_crc32` from `FRAME_BEGIN` but
    does not verify it yet; packet-level CRC16 is implemented.

@@ -13,9 +13,9 @@
 /* Host protocol parser and frame transaction manager. */
 #define COMM_PROTOCOL_UID_WORDS             3U
 #define COMM_PROTOCOL_UID_BASE_ADDRESS      0x1FFFF7E8UL
-#define COMM_PROTOCOL_FRAME_RECEIVED_MASK   0x00FFU
+#define COMM_PROTOCOL_FRAME_RECEIVED_MASK   0x0003U
 #define COMM_PROTOCOL_FRAME_BEGIN_LEN       12U
-#define COMM_PROTOCOL_CHUNK_HEADER_LEN      4U
+#define COMM_PROTOCOL_CHUNK_HEADER_LEN      5U
 #define COMM_PROTOCOL_CHUNK_PAYLOAD_LEN     (COMM_PROTOCOL_CHUNK_HEADER_LEN + COMM_PROTOCOL_CHUNK_RGB_BYTES)
 #define COMM_PROTOCOL_COMMIT_LEN            2U
 #define COMM_PROTOCOL_STATUS_FLAG_FAULT      0x0001U
@@ -480,12 +480,14 @@ static void CommProtocol_HandleFrameBegin(void)
 static void CommProtocol_HandleFrameChunk(void)
 {
   uint16_t frame_id;
+  uint16_t data_len;
   uint8_t chunk_index;
+  uint8_t lane_offset;
   uint8_t lane;
   uint16_t pixel;
   const uint8_t *src;
 
-  /* Each RGB chunk fills one logical 48-pixel lane. */
+  /* Each RGB chunk fills four complete logical lanes. */
   if (comm_protocol_payload_len != COMM_PROTOCOL_CHUNK_PAYLOAD_LEN)
   {
     comm_protocol_transaction.severe_error = 1U;
@@ -503,6 +505,7 @@ static void CommProtocol_HandleFrameChunk(void)
 
   frame_id = CommProtocol_ReadU16(&comm_protocol_payload[0]);
   chunk_index = comm_protocol_payload[2];
+  data_len = CommProtocol_ReadU16(&comm_protocol_payload[3]);
 
   if (frame_id != comm_protocol_transaction.frame_id)
   {
@@ -512,7 +515,7 @@ static void CommProtocol_HandleFrameChunk(void)
   }
 
   if ((chunk_index >= COMM_PROTOCOL_FRAME_CHUNKS) ||
-      (comm_protocol_payload[3] != COMM_PROTOCOL_CHUNK_RGB_BYTES))
+      (data_len != COMM_PROTOCOL_CHUNK_RGB_BYTES))
   {
     comm_protocol_transaction.severe_error = 1U;
     CommProtocol_RecordError(COMM_PROTO_ERR_BAD_CHUNK);
@@ -520,16 +523,21 @@ static void CommProtocol_HandleFrameChunk(void)
     return;
   }
 
-  lane = chunk_index;
   src = &comm_protocol_payload[COMM_PROTOCOL_CHUNK_HEADER_LEN];
 
-  for (pixel = 0U; pixel < COMM_PROTOCOL_LEDS_PER_CHUNK; pixel++)
+  for (lane_offset = 0U; lane_offset < COMM_PROTOCOL_LANES_PER_CHUNK; lane_offset++)
   {
-    uint16_t src_offset = (uint16_t)(pixel * 3U);
+    lane = (uint8_t)((chunk_index * COMM_PROTOCOL_LANES_PER_CHUNK) + lane_offset);
 
-    comm_protocol_staging_frame[lane][pixel][0] = src[src_offset];
-    comm_protocol_staging_frame[lane][pixel][1] = src[(uint16_t)(src_offset + 1U)];
-    comm_protocol_staging_frame[lane][pixel][2] = src[(uint16_t)(src_offset + 2U)];
+    for (pixel = 0U; pixel < COMM_PROTOCOL_LOGICAL_LEDS_PER_LANE; pixel++)
+    {
+      uint16_t src_pixel = (uint16_t)(((uint16_t)lane_offset * COMM_PROTOCOL_LOGICAL_LEDS_PER_LANE) + pixel);
+      uint16_t src_offset = (uint16_t)(src_pixel * 3U);
+
+      comm_protocol_staging_frame[lane][pixel][0] = src[src_offset];
+      comm_protocol_staging_frame[lane][pixel][1] = src[(uint16_t)(src_offset + 1U)];
+      comm_protocol_staging_frame[lane][pixel][2] = src[(uint16_t)(src_offset + 2U)];
+    }
   }
 
   comm_protocol_transaction.received_mask |= (uint16_t)(1UL << chunk_index);

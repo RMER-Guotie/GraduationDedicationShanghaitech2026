@@ -12,13 +12,14 @@ SYNC = b"\x5a\xa5"
 VERSION = 1
 HEADER_SIZE = 7
 CRC_SIZE = 2
-MAX_PAYLOAD = 160
+MAX_PAYLOAD = 640
 
 LANES = 8
 LEDS_PER_LANE = 48
-LEDS_PER_CHUNK = 48
+LANES_PER_CHUNK = 4
+LEDS_PER_CHUNK = LEDS_PER_LANE * LANES_PER_CHUNK
 CHUNK_RGB_BYTES = LEDS_PER_CHUNK * 3
-FRAME_CHUNKS = 8
+FRAME_CHUNKS = 2
 
 HELLO_REQ = 0x01
 HELLO_RSP = 0x81
@@ -248,7 +249,7 @@ def build_frame_chunk(seq: int, frame_id: int, chunk_index: int, rgb_data: bytes
         raise ValueError(f"chunk must be {CHUNK_RGB_BYTES} bytes")
     if not 0 <= chunk_index < FRAME_CHUNKS:
         raise ValueError(f"chunk_index out of range: {chunk_index}")
-    payload = struct.pack("<HBB", frame_id & 0xFFFF, chunk_index, CHUNK_RGB_BYTES) + rgb_data
+    payload = struct.pack("<HBH", frame_id & 0xFFFF, chunk_index, CHUNK_RGB_BYTES) + rgb_data
     return encode_packet(FRAME_RGB_CHUNK, seq, payload)
 
 
@@ -263,13 +264,13 @@ def solid_frame_rgb(r: int, g: int, b: int) -> bytes:
 
 
 def iter_frame_chunks(frame_rgb: bytes) -> Iterator[tuple[int, bytes]]:
-    """Yield firmware chunk_index and 144-byte RGB data for an 8x48 logical frame."""
+    """Yield firmware chunk_index and 576-byte RGB data for an 8x48 logical frame."""
     expected = LANES * LEDS_PER_LANE * 3
     if len(frame_rgb) != expected:
         raise ValueError(f"frame must be {expected} bytes")
 
     for chunk_index in range(FRAME_CHUNKS):
-        lane = chunk_index
+        lane = chunk_index * LANES_PER_CHUNK
         pixel_start = lane * LEDS_PER_LANE
         byte_start = pixel_start * 3
         yield chunk_index, frame_rgb[byte_start : byte_start + CHUNK_RGB_BYTES]

@@ -33,7 +33,7 @@ from . import protocol as proto
 from .device import FrameTiming, PixelDevice
 from .serial_link import SerialLink, list_serial_ports
 
-DEFAULT_CHUNK_DELAY_S = 0.00175
+DEFAULT_CHUNK_DELAY_S = 0.0
 STRESS_POINT_DURATION_MS = 8000
 # Sweep chunk pacing at a fixed target to find the stable closed-loop limit.
 STRESS_POINTS = (
@@ -158,7 +158,7 @@ class MainWindow(QMainWindow):
         self.cw_spin = self._level_spin(0)
         self.breath_fps_spin = QSpinBox()
         self.breath_fps_spin.setRange(1, 90)
-        self.breath_fps_spin.setValue(30)
+        self.breath_fps_spin.setValue(60)
         self.breath_period_spin = QDoubleSpinBox()
         self.breath_period_spin.setRange(0.5, 20.0)
         self.breath_period_spin.setDecimals(1)

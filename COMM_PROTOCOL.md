@@ -50,30 +50,28 @@ addresses `8 x 48` logical RGB pixels, and firmware expands each logical pixel t
 two cascaded physical LEDs on the same small board. A full logical RGB frame is
 `1152 bytes`.
 
-Each RGB chunk carries `48` RGB pixels:
+Each RGB chunk carries four complete logical lanes, `192` RGB pixels:
 
 ```text
 chunk payload:
 frame_id     2 bytes
-chunk_index  1 byte   0..7
-data_len     1 byte   must be 144
-rgb_data   144 bytes  RGBRGB...
+chunk_index  1 byte   0..1
+data_len     2 bytes  must be 576
+rgb_data   576 bytes  RGBRGB...
 ```
 
 Chunk mapping is lane-major:
 
 ```text
-chunk 0  -> lane 0, logical pixels 0..47
-chunk 1  -> lane 1, logical pixels 0..47
-...
-chunk 7  -> lane 7, logical pixels 0..47
+chunk 0  -> lanes 0..3, logical pixels 0..47 for each lane
+chunk 1  -> lanes 4..7, logical pixels 0..47 for each lane
 ```
 
 `FRAME_BEGIN` payload:
 
 ```text
 frame_id     2 bytes
-chunk_count  1 byte   must be 8
+chunk_count  1 byte   must be 2
 frame_flags  1 byte
 ww_level     2 bytes  0..1000
 cw_level     2 bytes  0..1000
@@ -94,7 +92,7 @@ status         1 byte
 received_mask  2 bytes
 ```
 
-Commit succeeds only when all 8 chunks are received, frame ID matches, no severe
+Commit succeeds only when both chunks are received, frame ID matches, no severe
 transaction error is active, and overcurrent protection is not active.
 
 ## Device Identity
@@ -106,10 +104,10 @@ uid_hash          4 bytes
 role_id           1 byte   0xFF means unknown
 lanes             1 byte   8
 leds_per_lane     2 bytes  48 logical pixels
-chunk_rgb_bytes   2 bytes  144
-chunk_count       1 byte   8
+chunk_rgb_bytes   2 bytes  576
+chunk_count       1 byte   2
 protocol_version  1 byte   1
-max_payload       2 bytes  160
+max_payload       2 bytes  640
 long_timeout_ms   2 bytes  10000
 white_max_level   2 bytes  1000
 ```
