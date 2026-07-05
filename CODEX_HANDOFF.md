@@ -38,8 +38,10 @@
   - CH7 = PA6
   - CH8 = PA7
 - System-level LED array uses at least 4 downstream controller boards.
-- Each downstream controller board controls only its own `8 x 96` WS2812B LEDs:
+- Each downstream controller board physically controls `8 x 96` WS2812B LEDs:
   8 output channels, 48 small boards per channel, 2 WS2812B LEDs per small board.
+- The current host protocol addresses `8 x 48` logical pixels. Firmware expands
+  each logical pixel to the two cascaded physical LEDs on the same small board.
 - The aggregate system is therefore at least `32 x 96` WS2812B LEDs, but this is
   split across multiple controllers. A single STM32 firmware instance must not
   allocate buffers for the whole aggregate array.
@@ -437,18 +439,20 @@ WAIT_SYNC0 -> WAIT_SYNC1 -> READ_HEADER -> READ_PAYLOAD -> READ_CRC0 -> READ_CRC
   - `ERROR_RSP`
 - `uid_hash` is derived from the STM32 UID base address and returned in
   `HELLO_RSP`; `role_id` is currently `0xFF` / unknown.
-- A statically allocated staging RGB frame stores one uncommitted `8 x 96 x RGB`
-  frame, adding `2304 bytes` RAM.
-- One full frame uses 16 chunks. Each chunk carries 144 bytes = 48 RGB pixels.
+- A statically allocated staging RGB frame stores one uncommitted `8 x 48 x RGB`
+  logical frame, adding `1152 bytes` RAM.
+- One full frame uses 8 chunks. Each chunk carries 144 bytes = 48 RGB pixels.
 - Chunk mapping is lane-major:
-  - chunk 0/1 -> lane 0 pixels 0..47 / 48..95,
-  - chunk 2/3 -> lane 1,
+  - chunk 0 -> lane 0 logical pixels 0..47,
+  - chunk 1 -> lane 1 logical pixels 0..47,
   - ...
-  - chunk 14/15 -> lane 7.
+  - chunk 7 -> lane 7 logical pixels 0..47.
+- On commit, firmware maps each logical pixel to two physical WS2812B pixels:
+  physical indices `2n` and `2n + 1`.
 - `FRAME_BEGIN` records frame ID, chunk count, WW/CW metadata, and optional
   frame CRC32. The current first version stores but does not verify frame CRC32.
 - CRC-valid chunks write only into the staging frame and update `received_mask`.
-- `FRAME_COMMIT` succeeds only when frame ID matches, all 16 chunks are received,
+- `FRAME_COMMIT` succeeds only when frame ID matches, all 8 chunks are received,
   no severe transaction error is active, and overcurrent fault is inactive.
 - Successful commit copies staging RGB into the WS2812 software frame, applies
   WW/CW target levels, and triggers WS2812 output. If WS2812 DMA is busy, it
@@ -634,14 +638,15 @@ separate authorization.
 
 Bandwidth estimate:
 
-- Per-controller full RGB frame size: `8 * 96 * 3 = 2304 bytes`.
+- Per-controller logical protocol RGB frame size: `8 * 48 * 3 = 1152 bytes`.
 - The host owns any aggregate `32 x 96` or larger system layout and distributes
-  each controller's own `8 x 96` frame by device identity.
-- With protocol overhead, estimate about `2500..2600 bytes/frame`.
-- At `60 fps`, input is about `150..156 KB/s`; a 256-byte RX ring covers about
+  each controller's own `8 x 48` logical frame by device identity.
+- Firmware expands each logical pixel to two physical WS2812B LEDs.
+- With protocol overhead, estimate about `1250..1350 bytes/frame`.
+- At `60 fps`, input is about `75..81 KB/s`; a 256-byte RX ring covers about
+  `3.1 ms`.
+- At `120 fps`, input is about `150..162 KB/s`; a 256-byte RX ring covers about
   `1.6 ms`.
-- At `120 fps`, input is about `300..312 KB/s`; a 256-byte RX ring covers about
-  `0.8 ms`.
 - Therefore `60 fps` is the guaranteed design target. `120 fps` is only a stress
   estimate and requires the main loop to drain communication data very often.
 
@@ -710,9 +715,9 @@ Frame transaction rules:
 - WW/CW white levels are stored as frame metadata and take effect only after a
   successful `FRAME_COMMIT`.
 - Each RGB chunk is planned as 144 bytes, representing 48 RGB LEDs.
-- One full frame has 16 RGB chunks.
+- One full frame has 8 RGB chunks.
 - CRC-valid chunks are written to the back/staging frame at their target offset.
-- A `received_mask` tracks the 16 chunks.
+- A `received_mask` tracks the 8 chunks.
 - `FRAME_COMMIT` is accepted only when frame ID matches, all chunks are received,
   and no severe transaction error is active.
 - `COMM_PROTOCOL.md` is the host-facing protocol handoff document.
@@ -753,9 +758,9 @@ Current scope:
   - sync `0x5A 0xA5`,
   - protocol version `1`,
   - CRC16-CCITT-FALSE,
-  - 16 RGB chunks per full frame,
+  - 8 RGB chunks per full frame,
   - each RGB chunk carries 144 bytes / 48 pixels,
-  - lane-major `8 x 96` mapping.
+  - lane-major `8 x 48` logical mapping.
 - Implemented CLI commands:
 
 ```text
@@ -812,8 +817,9 @@ Closed-loop throughput validation on USB CDC virtual COM:
   - `frame_rx_span_ms = 44`,
   - `commit_to_rsp_ms = 5`.
   This showed firmware commit latency was not the main bottleneck.
-- Stress testing with full `8 x 96` RGB frames and one commit response per frame
-  found the current stable chunk pacing boundary:
+- Before reducing the protocol to 48 logical pixels per lane, stress testing
+  with full `8 x 96` logical RGB frames and one commit response per frame found
+  the previous stable chunk pacing boundary:
 
 ```text
 2.00 ms: stable, 0 error
@@ -824,9 +830,23 @@ Closed-loop throughput validation on USB CDC virtual COM:
 1.00 ms and below: timeout or severe errors
 ```
 
+- After reducing the protocol to `8 x 48` logical pixels, HELLO reports
+  `leds_per_lane = 48`, `chunk_count = 8`, and successful full-frame commits
+  return `received_mask = 0x00ff`.
+- Bench stress results for `8 x 48` logical full-frame closed-loop streaming:
+
+```text
+2.00 ms: stable, actual about 34.2 fps, 0 error
+1.75 ms: stable, actual about 36.9 fps, 0 error
+1.60 ms: near edge, commit_err=1, error_delta=5
+1.50 ms: unstable, commit_err=1, error_delta=7
+1.25 ms: clearly unstable, commit_err=128, error_delta=852
+1.00 ms and below: timeout or severe errors
+```
+
 - Current GUI defaults are therefore:
-  - default chunk delay: `1.60 ms`,
-  - default breath target: `20 fps`.
+  - default chunk delay: `1.75 ms`,
+  - default breath target: `30 fps`.
 - This is a stable closed-loop bench-control setting, not the final high-frame-
   rate architecture.
 - Reaching 60 fps full-frame updates likely requires protocol/scheduler changes,
@@ -837,7 +857,8 @@ Current limitations:
 
 - No persistent multi-board role mapping beyond the example JSON file.
 - Current live GUI stream is closed-loop and waits for a commit response per
-  frame, so the stable bench rate is about 20 fps.
+  frame, so the stable bench rate is about 30 fps after the `8 x 48` logical
+  protocol reduction.
 - No automatic dependency installation has been run.
 - GUI operations are currently synchronous and intended for bench debug, not
   high-rate streaming.
@@ -937,7 +958,7 @@ RAM remaining: 160 bytes
 ```
 
 The build passes, but RAM margin is extremely small. The current design keeps
-both `ws2812_frame[2304]` and `comm_protocol_staging_frame[2304]` as approved.
+both `ws2812_frame[2304]` and `comm_protocol_staging_frame[1152]` as approved.
 If later features add more global/static RAM, revisit heap/stack sizing, USB
 descriptor buffer size, or the frame-staging strategy.
 

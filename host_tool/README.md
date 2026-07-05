@@ -53,16 +53,18 @@ sync0 sync1 version type seq payload_len flags payload crc16
 - multi-byte fields: little-endian
 - CRC: CRC16-CCITT-FALSE over `version..payload`
 
-One full controller frame is `8 * 96 * 3 = 2304` RGB bytes. It is sent as:
+One full controller protocol frame is `8 * 48 * 3 = 1152` RGB bytes. Firmware
+duplicates each logical pixel to the two physical LEDs on the same small board.
+It is sent as:
 
 ```text
 FRAME_BEGIN
-16 * FRAME_RGB_CHUNK
+8 * FRAME_RGB_CHUNK
 FRAME_COMMIT
 ```
 
 Each chunk contains 48 RGB pixels, or 144 bytes. Chunk mapping is lane-major:
-chunk 0/1 are lane 0 pixels 0..47 / 48..95, chunk 2/3 are lane 1, and so on.
+chunk 0 is lane 0 logical pixels 0..47, chunk 1 is lane 1, and so on.
 
 ## Device Identity
 

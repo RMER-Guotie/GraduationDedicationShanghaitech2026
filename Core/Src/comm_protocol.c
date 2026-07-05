@@ -13,7 +13,7 @@
 /* Host protocol parser and frame transaction manager. */
 #define COMM_PROTOCOL_UID_WORDS             3U
 #define COMM_PROTOCOL_UID_BASE_ADDRESS      0x1FFFF7E8UL
-#define COMM_PROTOCOL_FRAME_RECEIVED_MASK   0xFFFFU
+#define COMM_PROTOCOL_FRAME_RECEIVED_MASK   0x00FFU
 #define COMM_PROTOCOL_FRAME_BEGIN_LEN       12U
 #define COMM_PROTOCOL_CHUNK_HEADER_LEN      4U
 #define COMM_PROTOCOL_CHUNK_PAYLOAD_LEN     (COMM_PROTOCOL_CHUNK_HEADER_LEN + COMM_PROTOCOL_CHUNK_RGB_BYTES)
@@ -87,7 +87,7 @@ static uint8_t comm_protocol_packet_type;
 static uint16_t comm_protocol_packet_seq;
 
 /* Staging frame preserves atomic commit semantics before touching output frame. */
-static uint8_t comm_protocol_staging_frame[WS2812_BSR_LANES][WS2812_BSR_LEDS_PER_LANE][3];
+static uint8_t comm_protocol_staging_frame[WS2812_BSR_LANES][COMM_PROTOCOL_LOGICAL_LEDS_PER_LANE][3];
 static CommProtocolFrameTransaction_t comm_protocol_transaction;
 static uint8_t comm_protocol_host_control_active;
 static uint8_t comm_protocol_pending_show;
@@ -482,12 +482,10 @@ static void CommProtocol_HandleFrameChunk(void)
   uint16_t frame_id;
   uint8_t chunk_index;
   uint8_t lane;
-  uint8_t half;
-  uint16_t pixel_start;
   uint16_t pixel;
   const uint8_t *src;
 
-  /* Each RGB chunk fills 48 pixels in one half of one physical lane. */
+  /* Each RGB chunk fills one logical 48-pixel lane. */
   if (comm_protocol_payload_len != COMM_PROTOCOL_CHUNK_PAYLOAD_LEN)
   {
     comm_protocol_transaction.severe_error = 1U;
@@ -522,19 +520,16 @@ static void CommProtocol_HandleFrameChunk(void)
     return;
   }
 
-  lane = (uint8_t)(chunk_index / 2U);
-  half = (uint8_t)(chunk_index & 1U);
-  pixel_start = (uint16_t)((uint16_t)half * COMM_PROTOCOL_LEDS_PER_CHUNK);
+  lane = chunk_index;
   src = &comm_protocol_payload[COMM_PROTOCOL_CHUNK_HEADER_LEN];
 
   for (pixel = 0U; pixel < COMM_PROTOCOL_LEDS_PER_CHUNK; pixel++)
   {
-    uint16_t dst_pixel = (uint16_t)(pixel_start + pixel);
     uint16_t src_offset = (uint16_t)(pixel * 3U);
 
-    comm_protocol_staging_frame[lane][dst_pixel][0] = src[src_offset];
-    comm_protocol_staging_frame[lane][dst_pixel][1] = src[(uint16_t)(src_offset + 1U)];
-    comm_protocol_staging_frame[lane][dst_pixel][2] = src[(uint16_t)(src_offset + 2U)];
+    comm_protocol_staging_frame[lane][pixel][0] = src[src_offset];
+    comm_protocol_staging_frame[lane][pixel][1] = src[(uint16_t)(src_offset + 1U)];
+    comm_protocol_staging_frame[lane][pixel][2] = src[(uint16_t)(src_offset + 2U)];
   }
 
   comm_protocol_transaction.received_mask |= (uint16_t)(1UL << chunk_index);
@@ -606,16 +601,23 @@ static void CommProtocol_ApplyCommittedFrame(void)
 {
   uint8_t lane;
   uint16_t pixel;
+  uint16_t physical_pixel;
 
   comm_protocol_watch_apply_start_ms = HAL_GetTick();
 
-  /* Copy the committed staging frame into the WS2812 output frame. */
+  /* Expand 48 logical pixels to 96 physical LEDs as paired same-color pixels. */
   for (lane = 0U; lane < WS2812_BSR_LANES; lane++)
   {
-    for (pixel = 0U; pixel < WS2812_BSR_LEDS_PER_LANE; pixel++)
+    for (pixel = 0U; pixel < COMM_PROTOCOL_LOGICAL_LEDS_PER_LANE; pixel++)
     {
+      physical_pixel = (uint16_t)(pixel * 2U);
       WS2812_BSR_SetPixel(lane,
-                          pixel,
+                          physical_pixel,
+                          comm_protocol_staging_frame[lane][pixel][0],
+                          comm_protocol_staging_frame[lane][pixel][1],
+                          comm_protocol_staging_frame[lane][pixel][2]);
+      WS2812_BSR_SetPixel(lane,
+                          (uint16_t)(physical_pixel + 1U),
                           comm_protocol_staging_frame[lane][pixel][0],
                           comm_protocol_staging_frame[lane][pixel][1],
                           comm_protocol_staging_frame[lane][pixel][2]);
@@ -657,7 +659,7 @@ static void CommProtocol_SendHelloResponse(uint16_t seq)
   CommProtocol_WriteU32(&payload[0], comm_protocol_uid_hash);
   payload[4] = COMM_PROTOCOL_ROLE_UNKNOWN;
   payload[5] = WS2812_BSR_LANES;
-  CommProtocol_WriteU16(&payload[6], WS2812_BSR_LEDS_PER_LANE);
+  CommProtocol_WriteU16(&payload[6], COMM_PROTOCOL_LOGICAL_LEDS_PER_LANE);
   CommProtocol_WriteU16(&payload[8], COMM_PROTOCOL_CHUNK_RGB_BYTES);
   payload[10] = COMM_PROTOCOL_FRAME_CHUNKS;
   payload[11] = APP_COMM_PROTOCOL_VERSION;

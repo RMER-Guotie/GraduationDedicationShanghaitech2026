@@ -45,14 +45,17 @@ crc16        2 bytes
 
 ## Frame Transfer
 
-One controller owns `8 x 96` RGB LEDs. A full RGB frame is `2304 bytes`.
+One controller physically owns `8 x 96` WS2812B LEDs. The host protocol currently
+addresses `8 x 48` logical RGB pixels, and firmware expands each logical pixel to
+two cascaded physical LEDs on the same small board. A full logical RGB frame is
+`1152 bytes`.
 
 Each RGB chunk carries `48` RGB pixels:
 
 ```text
 chunk payload:
 frame_id     2 bytes
-chunk_index  1 byte   0..15
+chunk_index  1 byte   0..7
 data_len     1 byte   must be 144
 rgb_data   144 bytes  RGBRGB...
 ```
@@ -60,20 +63,17 @@ rgb_data   144 bytes  RGBRGB...
 Chunk mapping is lane-major:
 
 ```text
-chunk 0  -> lane 0, pixels 0..47
-chunk 1  -> lane 0, pixels 48..95
-chunk 2  -> lane 1, pixels 0..47
-chunk 3  -> lane 1, pixels 48..95
+chunk 0  -> lane 0, logical pixels 0..47
+chunk 1  -> lane 1, logical pixels 0..47
 ...
-chunk 14 -> lane 7, pixels 0..47
-chunk 15 -> lane 7, pixels 48..95
+chunk 7  -> lane 7, logical pixels 0..47
 ```
 
 `FRAME_BEGIN` payload:
 
 ```text
 frame_id     2 bytes
-chunk_count  1 byte   must be 16
+chunk_count  1 byte   must be 8
 frame_flags  1 byte
 ww_level     2 bytes  0..1000
 cw_level     2 bytes  0..1000
@@ -94,7 +94,7 @@ status         1 byte
 received_mask  2 bytes
 ```
 
-Commit succeeds only when all 16 chunks are received, frame ID matches, no severe
+Commit succeeds only when all 8 chunks are received, frame ID matches, no severe
 transaction error is active, and overcurrent protection is not active.
 
 ## Device Identity
@@ -105,9 +105,9 @@ transaction error is active, and overcurrent protection is not active.
 uid_hash          4 bytes
 role_id           1 byte   0xFF means unknown
 lanes             1 byte   8
-leds_per_lane     2 bytes  96
+leds_per_lane     2 bytes  48 logical pixels
 chunk_rgb_bytes   2 bytes  144
-chunk_count       1 byte   16
+chunk_count       1 byte   8
 protocol_version  1 byte   1
 max_payload       2 bytes  160
 long_timeout_ms   2 bytes  10000

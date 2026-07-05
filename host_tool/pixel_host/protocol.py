@@ -15,10 +15,10 @@ CRC_SIZE = 2
 MAX_PAYLOAD = 160
 
 LANES = 8
-LEDS_PER_LANE = 96
+LEDS_PER_LANE = 48
 LEDS_PER_CHUNK = 48
 CHUNK_RGB_BYTES = LEDS_PER_CHUNK * 3
-FRAME_CHUNKS = 16
+FRAME_CHUNKS = 8
 
 HELLO_REQ = 0x01
 HELLO_RSP = 0x81
@@ -263,15 +263,14 @@ def solid_frame_rgb(r: int, g: int, b: int) -> bytes:
 
 
 def iter_frame_chunks(frame_rgb: bytes) -> Iterator[tuple[int, bytes]]:
-    """Yield firmware chunk_index and 144-byte RGB data for an 8x96 frame."""
+    """Yield firmware chunk_index and 144-byte RGB data for an 8x48 logical frame."""
     expected = LANES * LEDS_PER_LANE * 3
     if len(frame_rgb) != expected:
         raise ValueError(f"frame must be {expected} bytes")
 
     for chunk_index in range(FRAME_CHUNKS):
-        lane = chunk_index // 2
-        half = chunk_index & 1
-        pixel_start = lane * LEDS_PER_LANE + half * LEDS_PER_CHUNK
+        lane = chunk_index
+        pixel_start = lane * LEDS_PER_LANE
         byte_start = pixel_start * 3
         yield chunk_index, frame_rgb[byte_start : byte_start + CHUNK_RGB_BYTES]
 

@@ -24,5 +24,5 @@ def test_frame_chunking() -> None:
     assert len(chunks) == proto.FRAME_CHUNKS
     assert chunks[0][0] == 0
     assert chunks[0][1] == bytes((1, 2, 3)) * proto.LEDS_PER_CHUNK
-    assert chunks[-1][0] == 15
+    assert chunks[-1][0] == proto.FRAME_CHUNKS - 1
     assert len(chunks[-1][1]) == proto.CHUNK_RGB_BYTES
