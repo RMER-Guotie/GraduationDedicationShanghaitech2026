@@ -64,6 +64,16 @@ extern volatile uint32_t comm_protocol_watch_commit_count;
 extern volatile uint32_t comm_protocol_watch_commit_error_count;
 extern volatile uint32_t comm_protocol_watch_timeout_black_count;
 extern volatile uint32_t comm_protocol_watch_last_valid_packet_ms;
+extern volatile uint32_t comm_protocol_watch_frame_begin_ms;
+extern volatile uint32_t comm_protocol_watch_last_chunk_ms;
+extern volatile uint32_t comm_protocol_watch_commit_rx_ms;
+extern volatile uint32_t comm_protocol_watch_apply_start_ms;
+extern volatile uint32_t comm_protocol_watch_apply_done_ms;
+extern volatile uint32_t comm_protocol_watch_show_request_ms;
+extern volatile uint32_t comm_protocol_watch_show_start_ms;
+extern volatile uint32_t comm_protocol_watch_commit_rsp_ms;
+extern volatile uint32_t comm_protocol_watch_frame_rx_span_ms;
+extern volatile uint32_t comm_protocol_watch_commit_to_rsp_ms;
 
 #ifdef __cplusplus
 }

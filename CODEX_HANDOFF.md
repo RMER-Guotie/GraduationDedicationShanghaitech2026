@@ -487,6 +487,16 @@ comm_protocol_watch_commit_count
 comm_protocol_watch_commit_error_count
 comm_protocol_watch_timeout_black_count
 comm_protocol_watch_last_valid_packet_ms
+comm_protocol_watch_frame_begin_ms
+comm_protocol_watch_last_chunk_ms
+comm_protocol_watch_commit_rx_ms
+comm_protocol_watch_apply_start_ms
+comm_protocol_watch_apply_done_ms
+comm_protocol_watch_show_request_ms
+comm_protocol_watch_show_start_ms
+comm_protocol_watch_commit_rsp_ms
+comm_protocol_watch_frame_rx_span_ms
+comm_protocol_watch_commit_to_rsp_ms
 ```
 
 ## ADC Current Protection Architecture
@@ -771,9 +781,15 @@ Current GUI features:
 
 - serial port refresh/connect/disconnect,
 - HELLO and STATUS requests,
-- ALL_BLACK command,
 - solid RGB frame send with WW/CW metadata,
-- 8-lane color test frame send,
+- host-computed rainbow/breathing frame stream,
+- stress test for full-frame closed-loop throughput,
+- per-frame host timing breakdown:
+  - begin write,
+  - chunk writes,
+  - chunk pacing,
+  - commit write,
+  - commit response wait,
 - optional status refresh after output commands,
 - text log for responses and errors.
 
@@ -784,10 +800,44 @@ python -m compileall host_tool
 protocol self-tests passed
 ```
 
+Closed-loop throughput validation on USB CDC virtual COM:
+
+- The first stable host implementation used `read(64)` with a 50 ms serial
+  timeout. Because commit responses are short packets, pyserial often waited for
+  timeout before returning a partial read.
+- After changing `SerialLink.read_packet()` to read `in_waiting` bytes, or block
+  for only one byte when none are available, commit response wait dropped from
+  about `57..62 ms` to about `6.1..6.6 ms`.
+- Firmware timing probes measured a successful frame as:
+  - `frame_rx_span_ms = 44`,
+  - `commit_to_rsp_ms = 5`.
+  This showed firmware commit latency was not the main bottleneck.
+- Stress testing with full `8 x 96` RGB frames and one commit response per frame
+  found the current stable chunk pacing boundary:
+
+```text
+2.00 ms: stable, 0 error
+1.75 ms: stable, 0 error
+1.60 ms: stable, 0 error, actual about 23 fps
+1.50 ms: unstable, commit/error count increases
+1.25 ms: clearly unstable
+1.00 ms and below: timeout or severe errors
+```
+
+- Current GUI defaults are therefore:
+  - default chunk delay: `1.60 ms`,
+  - default breath target: `20 fps`.
+- This is a stable closed-loop bench-control setting, not the final high-frame-
+  rate architecture.
+- Reaching 60 fps full-frame updates likely requires protocol/scheduler changes,
+  such as fewer packets per frame, reduced or periodic ACKs, improved parser
+  drain cadence, or a streaming/ping-pong frame model.
+
 Current limitations:
 
 - No persistent multi-board role mapping beyond the example JSON file.
-- No live frame streaming loop yet; the first command path sends discrete frames.
+- Current live GUI stream is closed-loop and waits for a commit response per
+  frame, so the stable bench rate is about 20 fps.
 - No automatic dependency installation has been run.
 - GUI operations are currently synchronous and intended for bench debug, not
   high-rate streaming.

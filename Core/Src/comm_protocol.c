@@ -63,6 +63,17 @@ volatile uint32_t comm_protocol_watch_commit_count;
 volatile uint32_t comm_protocol_watch_commit_error_count;
 volatile uint32_t comm_protocol_watch_timeout_black_count;
 volatile uint32_t comm_protocol_watch_last_valid_packet_ms;
+/* Timing probes separate host transfer time from firmware commit latency. */
+volatile uint32_t comm_protocol_watch_frame_begin_ms;
+volatile uint32_t comm_protocol_watch_last_chunk_ms;
+volatile uint32_t comm_protocol_watch_commit_rx_ms;
+volatile uint32_t comm_protocol_watch_apply_start_ms;
+volatile uint32_t comm_protocol_watch_apply_done_ms;
+volatile uint32_t comm_protocol_watch_show_request_ms;
+volatile uint32_t comm_protocol_watch_show_start_ms;
+volatile uint32_t comm_protocol_watch_commit_rsp_ms;
+volatile uint32_t comm_protocol_watch_frame_rx_span_ms;
+volatile uint32_t comm_protocol_watch_commit_to_rsp_ms;
 
 /* Packet parser scratch buffers; payload is bounded by COMM_PROTOCOL_MAX_PAYLOAD. */
 static CommProtocolParserState_t comm_protocol_parser_state;
@@ -194,6 +205,7 @@ void CommProtocol_OutputPoll(uint32_t now_ms)
   if ((comm_protocol_pending_show != 0U) && (WS2812_BSR_IsBusy() == 0U))
   {
     comm_protocol_pending_show = 0U;
+    comm_protocol_watch_show_start_ms = now_ms;
     WS2812_BSR_Show();
   }
 
@@ -361,6 +373,31 @@ static void CommProtocol_PacketComplete(uint32_t now_ms)
   comm_protocol_last_valid_packet_ms = now_ms;
   comm_protocol_timeout_black_sent = 0U;
   comm_protocol_host_control_active = 1U;
+
+  /* Track one complete host-controlled frame from BEGIN to COMMIT response. */
+  if (comm_protocol_packet_type == COMM_MSG_FRAME_BEGIN)
+  {
+    comm_protocol_watch_frame_begin_ms = now_ms;
+    comm_protocol_watch_last_chunk_ms = 0U;
+    comm_protocol_watch_commit_rx_ms = 0U;
+    comm_protocol_watch_apply_start_ms = 0U;
+    comm_protocol_watch_apply_done_ms = 0U;
+    comm_protocol_watch_show_request_ms = 0U;
+    comm_protocol_watch_show_start_ms = 0U;
+    comm_protocol_watch_commit_rsp_ms = 0U;
+    comm_protocol_watch_frame_rx_span_ms = 0U;
+    comm_protocol_watch_commit_to_rsp_ms = 0U;
+  }
+  else if (comm_protocol_packet_type == COMM_MSG_FRAME_RGB_CHUNK)
+  {
+    comm_protocol_watch_last_chunk_ms = now_ms;
+  }
+  else if (comm_protocol_packet_type == COMM_MSG_FRAME_COMMIT)
+  {
+    comm_protocol_watch_commit_rx_ms = now_ms;
+    comm_protocol_watch_frame_rx_span_ms = now_ms - comm_protocol_watch_frame_begin_ms;
+  }
+
   CommProtocol_DispatchPacket(now_ms);
   CommProtocol_ResetParser();
 }
@@ -554,6 +591,8 @@ static void CommProtocol_HandleFrameCommit(void)
   CommProtocol_SendCommitResponse(comm_protocol_packet_seq,
                                   comm_protocol_transaction.frame_id,
                                   status);
+  comm_protocol_watch_commit_rsp_ms = HAL_GetTick();
+  comm_protocol_watch_commit_to_rsp_ms = comm_protocol_watch_commit_rsp_ms - comm_protocol_watch_commit_rx_ms;
 }
 
 static void CommProtocol_HandleAllBlack(void)
@@ -567,6 +606,8 @@ static void CommProtocol_ApplyCommittedFrame(void)
 {
   uint8_t lane;
   uint16_t pixel;
+
+  comm_protocol_watch_apply_start_ms = HAL_GetTick();
 
   /* Copy the committed staging frame into the WS2812 output frame. */
   for (lane = 0U; lane < WS2812_BSR_LANES; lane++)
@@ -583,10 +624,13 @@ static void CommProtocol_ApplyCommittedFrame(void)
 
   WhitePwm_SetBoth(comm_protocol_transaction.ww_level, comm_protocol_transaction.cw_level);
   CommProtocol_RequestShow();
+  comm_protocol_watch_apply_done_ms = HAL_GetTick();
 }
 
 static void CommProtocol_RequestShow(void)
 {
+  comm_protocol_watch_show_request_ms = HAL_GetTick();
+
   if (WS2812_BSR_IsBusy() != 0U)
   {
     comm_protocol_pending_show = 1U;
@@ -594,6 +638,7 @@ static void CommProtocol_RequestShow(void)
   }
 
   comm_protocol_pending_show = 0U;
+  comm_protocol_watch_show_start_ms = HAL_GetTick();
   WS2812_BSR_Show();
 }
 

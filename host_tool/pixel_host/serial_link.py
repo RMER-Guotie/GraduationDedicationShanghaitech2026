@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from contextlib import AbstractContextManager
 import time
-from typing import Iterable, Optional
+from typing import Optional
 
 from .protocol import Packet, PacketParser, ProtocolError
 
@@ -57,11 +57,12 @@ class SerialLink(AbstractContextManager["SerialLink"]):
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
 
-    def write(self, data: bytes) -> None:
+    def write(self, data: bytes, flush: bool = True) -> None:
         if self._serial is None:
             raise RuntimeError("serial link is not open")
         self._serial.write(data)
-        self._serial.flush()
+        if flush:
+            self._serial.flush()
 
     def read_packet(self, timeout: float = 1.0, expected_seq: Optional[int] = None) -> Packet:
         """Read until a valid packet arrives or timeout expires."""
@@ -71,7 +72,10 @@ class SerialLink(AbstractContextManager["SerialLink"]):
         deadline = time.monotonic() + timeout
         last_error: Optional[Exception] = None
         while time.monotonic() < deadline:
-            chunk = self._serial.read(64)
+            # Short CDC responses must not wait for the full serial timeout.
+            waiting = self._serial.in_waiting
+            read_len = waiting if waiting > 0 else 1
+            chunk = self._serial.read(read_len)
             if not chunk:
                 continue
             try:
