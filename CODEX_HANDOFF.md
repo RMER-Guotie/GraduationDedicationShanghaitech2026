@@ -782,7 +782,8 @@ Current files:
 
 Current GUI features:
 
-- GUI auto-connect is the primary connection workflow.
+- GUI auto-connect is the primary connection workflow and runs in a background
+  thread so the Qt UI shows `Connecting...` instead of appearing unresponsive.
 - `APP_ROLE_ID` is the physical PCB number, valid range `1..20`.
 - GUI scans visible COM ports, sends HELLO, keeps valid boards, sorts them by
   `role_id` ascending, and maps only the smallest four boards into active slots:
@@ -802,9 +803,12 @@ Current GUI features:
 - Channel numbers are `1..32`:
   - `slot = (channel - 1) / 8 + 1`,
   - `lane = (channel - 1) % 8`.
+- Channel test is state-preserving. The GUI keeps a cached RGB frame for each
+  slot and each test operation changes only the selected channel/lane in that
+  cache. Previously set channels remain unchanged until explicitly overwritten.
 - Channel test sends the selected WW/CW levels to all connected slots because
-  white PWM is a global board-level control in the host UI. Only the target RGB
-  lane is lit; all other RGB lanes are black.
+  white PWM is a global board-level control in the host UI. Each slot receives
+  its own cached RGB frame, so non-target channels are not forced black.
 - If a requested channel maps to a missing slot, the GUI logs an error and does
   not affect other boards.
 - File playback mode and channel test mode are mutually exclusive.

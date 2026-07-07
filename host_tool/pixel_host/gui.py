@@ -40,6 +40,7 @@ TOTAL_CHANNELS = MAX_ACTIVE_BOARDS * proto.LANES
 DEFAULT_BAUD = 115200
 DEFAULT_RESPONSE_TIMEOUT_S = 1.0
 DEFAULT_CHUNK_DELAY_S = 0.0
+FRAME_RGB_BYTES = proto.LANES * proto.LEDS_PER_LANE * 3
 
 
 @dataclass
@@ -223,6 +224,66 @@ class PlaybackWorker(threading.Thread):
                 self.log_queue.put(f"slot {slot_id} missing, playback will skip it")
 
 
+class AutoConnectWorker(threading.Thread):
+    """Scan serial ports and open valid boards without blocking the Qt event loop."""
+
+    def __init__(
+        self,
+        baudrate: int,
+        log_queue: queue.Queue[str],
+        result_queue: queue.Queue[dict[int, BoardSession]],
+    ) -> None:
+        super().__init__(daemon=True)
+        self.baudrate = baudrate
+        self.log_queue = log_queue
+        self.result_queue = result_queue
+
+    def run(self) -> None:
+        found: list[tuple[int, str, int, SerialLink, PixelDevice]] = []
+        try:
+            ports = list_serial_ports()
+            self.log_queue.put(f"SCAN ports={ports}")
+            for port in ports:
+                link = SerialLink(port, baudrate=self.baudrate, timeout=0.05)
+                try:
+                    self.log_queue.put(f"[{port}] checking")
+                    link.open()
+                    device = PixelDevice(link=link, response_timeout=DEFAULT_RESPONSE_TIMEOUT_S)
+                    hello = device.hello()
+                    if 1 <= hello.role_id <= 20:
+                        found.append((hello.role_id, port, hello.uid_hash, link, device))
+                        self.log_queue.put(f"[{port}] role={hello.role_id} uid={proto.format_uid(hello.uid_hash)}")
+                    else:
+                        self.log_queue.put(f"[{port}] skipped invalid role={hello.role_id}")
+                        link.close()
+                except Exception as exc:  # noqa: BLE001
+                    self.log_queue.put(f"[{port}] skipped: no pixel response ({exc})")
+                    link.close()
+
+            found.sort(key=lambda item: item[0])
+            for ignored in found[MAX_ACTIVE_BOARDS:]:
+                role_id, port, uid_hash, link, _device = ignored
+                self.log_queue.put(f"[{port}] role={role_id} uid={proto.format_uid(uid_hash)} ignored above 4-board limit")
+                link.close()
+
+            sessions: dict[int, BoardSession] = {}
+            for slot_id, item in enumerate(found[:MAX_ACTIVE_BOARDS], start=1):
+                role_id, port, uid_hash, link, device = item
+                sessions[slot_id] = BoardSession(slot_id, role_id, port, uid_hash, link, device)
+                self.log_queue.put(f"slot {slot_id} <= role {role_id} on {port}")
+
+            if len(sessions) < MAX_ACTIVE_BOARDS:
+                for slot_id in range(len(sessions) + 1, MAX_ACTIVE_BOARDS + 1):
+                    self.log_queue.put(f"slot {slot_id} missing")
+
+            self.result_queue.put(sessions)
+        except Exception as exc:  # noqa: BLE001
+            for _role_id, _port, _uid_hash, link, _device in found:
+                link.close()
+            self.log_queue.put(f"SCAN failed: {exc}")
+            self.result_queue.put({})
+
+
 class MainWindow(QMainWindow):
     """Four-board GUI controller for bench testing and file playback."""
 
@@ -235,7 +296,10 @@ class MainWindow(QMainWindow):
         self.playback_path: Optional[str] = None
         self.playback_control = PlaybackControl()
         self.playback_worker: Optional[PlaybackWorker] = None
+        self.auto_connect_worker: Optional[AutoConnectWorker] = None
         self.log_queue: queue.Queue[str] = queue.Queue()
+        self.connect_result_queue: queue.Queue[dict[int, BoardSession]] = queue.Queue()
+        self.slot_frames = {slot_id: bytearray(FRAME_RGB_BYTES) for slot_id in range(1, MAX_ACTIVE_BOARDS + 1)}
 
         self.log_timer = QTimer(self)
         self.log_timer.timeout.connect(self._drain_log_queue)
@@ -383,49 +447,19 @@ class MainWindow(QMainWindow):
         return spin
 
     def auto_connect(self) -> None:
+        if self.auto_connect_worker is not None and self.auto_connect_worker.is_alive():
+            self.log("Auto connect is already running")
+            return
+
         self.stop_playback()
         self.disconnect_all(log_disconnect=False)
-        QApplication.setOverrideCursor(Qt.WaitCursor)
+        self._reset_channel_frames()
         self.auto_connect_button.setEnabled(False)
-
-        found: list[tuple[int, str, int, SerialLink, PixelDevice]] = []
-        try:
-            ports = list_serial_ports()
-            self.log(f"SCAN ports={ports}")
-            for port in ports:
-                link = SerialLink(port, baudrate=self.baud_spin.value(), timeout=0.05)
-                try:
-                    link.open()
-                    device = PixelDevice(link=link, response_timeout=DEFAULT_RESPONSE_TIMEOUT_S)
-                    hello = device.hello()
-                    if 1 <= hello.role_id <= 20:
-                        found.append((hello.role_id, port, hello.uid_hash, link, device))
-                        self.log(f"[{port}] role={hello.role_id} uid={proto.format_uid(hello.uid_hash)}")
-                    else:
-                        self.log(f"[{port}] invalid role={hello.role_id}, ignored")
-                        link.close()
-                except Exception as exc:  # noqa: BLE001
-                    self.log(f"[{port}] no response: {exc}")
-                    link.close()
-
-            found.sort(key=lambda item: item[0])
-            for ignored in found[MAX_ACTIVE_BOARDS:]:
-                role_id, port, uid_hash, link, _device = ignored
-                self.log(f"[{port}] role={role_id} uid={proto.format_uid(uid_hash)} ignored above 4-board limit")
-                link.close()
-
-            for slot_id, item in enumerate(found[:MAX_ACTIVE_BOARDS], start=1):
-                role_id, port, uid_hash, link, device = item
-                self.sessions[slot_id] = BoardSession(slot_id, role_id, port, uid_hash, link, device)
-                self.log(f"slot {slot_id} <= role {role_id} on {port}")
-
-            if len(self.sessions) < MAX_ACTIVE_BOARDS:
-                for slot_id in range(len(self.sessions) + 1, MAX_ACTIVE_BOARDS + 1):
-                    self.log(f"slot {slot_id} missing")
-        finally:
-            QApplication.restoreOverrideCursor()
-            self.auto_connect_button.setEnabled(True)
-            self.update_slot_status()
+        self.disconnect_button.setEnabled(False)
+        self.connection_summary_label.setText("Connecting...")
+        self.log("Connecting...")
+        self.auto_connect_worker = AutoConnectWorker(self.baud_spin.value(), self.log_queue, self.connect_result_queue)
+        self.auto_connect_worker.start()
 
     def disconnect_all(self, log_disconnect: bool = True) -> None:
         self.stop_playback()
@@ -450,13 +484,12 @@ class MainWindow(QMainWindow):
             self.log(f"channel {channel} maps to missing slot {slot_id}")
             return
 
-        target_frame = self._build_channel_frame(lane)
-        black_frame = bytes(proto.LANES * proto.LEDS_PER_LANE * 3)
+        self._set_lane_color(slot_id, lane)
         QApplication.setOverrideCursor(Qt.WaitCursor)
         self.channel_test_button.setEnabled(False)
         try:
             for current_slot_id, current_session in sorted(self.sessions.items()):
-                frame = target_frame if current_slot_id == slot_id else black_frame
+                frame = bytes(self.slot_frames[current_slot_id])
                 try:
                     commit = current_session.device.send_frame(
                         frame,
@@ -474,7 +507,7 @@ class MainWindow(QMainWindow):
                         current_session.last_error = f"commit status={commit.status}"
                     self.log(
                         f"CHANNEL channel={channel} slot={current_slot_id} role={current_session.role_id} "
-                        f"target_lane={lane + 1 if current_slot_id == slot_id else 0} "
+                        f"changed_lane={lane + 1 if current_slot_id == slot_id else 0} "
                         f"commit_status={commit.status} mask=0x{commit.received_mask:04x}"
                     )
                 except Exception as exc:  # noqa: BLE001
@@ -487,14 +520,17 @@ class MainWindow(QMainWindow):
             self.channel_test_button.setEnabled(True)
             self.update_slot_status()
 
-    def _build_channel_frame(self, lane: int) -> bytes:
-        frame = bytearray(proto.LANES * proto.LEDS_PER_LANE * 3)
+    def _set_lane_color(self, slot_id: int, lane: int) -> None:
+        frame = self.slot_frames[slot_id]
         pixel = bytes((self.r_spin.value(), self.g_spin.value(), self.b_spin.value()))
         lane_offset = lane * proto.LEDS_PER_LANE * 3
         for index in range(proto.LEDS_PER_LANE):
             offset = lane_offset + index * 3
             frame[offset : offset + 3] = pixel
-        return bytes(frame)
+
+    def _reset_channel_frames(self) -> None:
+        for slot_id in range(1, MAX_ACTIVE_BOARDS + 1):
+            self.slot_frames[slot_id] = bytearray(FRAME_RGB_BYTES)
 
     def import_and_play(self) -> None:
         path, _selected_filter = QFileDialog.getOpenFileName(
@@ -566,8 +602,10 @@ class MainWindow(QMainWindow):
         self.pause_button.setText("Pause")
 
     def update_slot_status(self) -> None:
+        self._drain_connect_results()
         connected_count = len(self.sessions)
-        self.connection_summary_label.setText(f"{connected_count}/{MAX_ACTIVE_BOARDS} connected")
+        if self.auto_connect_worker is None or not self.auto_connect_worker.is_alive():
+            self.connection_summary_label.setText(f"{connected_count}/{MAX_ACTIVE_BOARDS} connected")
 
         for slot_id in range(1, MAX_ACTIVE_BOARDS + 1):
             label = self.slot_labels.get(slot_id)
@@ -597,6 +635,22 @@ class MainWindow(QMainWindow):
                 self.log(self.log_queue.get_nowait())
             except queue.Empty:
                 break
+        self._drain_connect_results()
+
+    def _drain_connect_results(self) -> None:
+        updated = False
+        while True:
+            try:
+                sessions = self.connect_result_queue.get_nowait()
+            except queue.Empty:
+                break
+            self.sessions = sessions
+            self.auto_connect_worker = None
+            self.auto_connect_button.setEnabled(True)
+            self.disconnect_button.setEnabled(True)
+            updated = True
+        if updated:
+            self.update_slot_status()
 
     def log(self, message: str) -> None:
         self.log_text.append(message)
