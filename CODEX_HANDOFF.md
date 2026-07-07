@@ -438,7 +438,8 @@ WAIT_SYNC0 -> WAIT_SYNC1 -> READ_HEADER -> READ_PAYLOAD -> READ_CRC0 -> READ_CRC
   - `STATUS_RSP`
   - `ERROR_RSP`
 - `uid_hash` is derived from the STM32 UID base address and returned in
-  `HELLO_RSP`; `role_id` is currently `0xFF` / unknown.
+  `HELLO_RSP`; `role_id` is the compile-time `APP_ROLE_ID` physical PCB number,
+  valid range `1..20`.
 - A statically allocated staging RGB frame stores one uncommitted `8 x 48 x RGB`
   logical frame, adding `1152 bytes` RAM.
 - One full frame currently uses 2 chunks. Each chunk carries 576 bytes =
@@ -737,11 +738,9 @@ Frame transaction rules:
 
 ### Device Identity
 
-- First version identifies the board through `uid_hash`.
 - `uid_hash` is derived from STM32 UID and returned in `HELLO_RSP`.
-- `role_id` is not implemented in the first version. If a board-number GPIO,
-  solder option, DIP switch, or compile-time role is added later, `HELLO_RSP`
-  can be extended.
+- `role_id` is implemented as compile-time macro `APP_ROLE_ID`.
+- `APP_ROLE_ID` is the physical PCB number, valid range `1..20`.
 - The host must not rely on COM port order to identify multiple boards.
 
 ## Host Debug Tool
@@ -783,19 +782,42 @@ Current files:
 
 Current GUI features:
 
-- serial port refresh/connect/disconnect,
-- HELLO and STATUS requests,
-- solid RGB frame send with WW/CW metadata,
-- host-computed rainbow/breathing frame stream,
-- stress test for full-frame closed-loop throughput,
-- per-frame host timing breakdown:
-  - begin write,
-  - chunk writes,
-  - chunk pacing,
-  - commit write,
-  - commit response wait,
-- optional status refresh after output commands,
-- text log for responses and errors.
+- GUI auto-connect is the primary connection workflow.
+- `APP_ROLE_ID` is the physical PCB number, valid range `1..20`.
+- GUI scans visible COM ports, sends HELLO, keeps valid boards, sorts them by
+  `role_id` ascending, and maps only the smallest four boards into active slots:
+  - sorted board 1 -> slot 1 -> output columns 1..8,
+  - sorted board 2 -> slot 2 -> output columns 9..16,
+  - sorted board 3 -> slot 3 -> output columns 17..24,
+  - sorted board 4 -> slot 4 -> output columns 25..32.
+- If more than four valid boards are connected, boards after the first four are
+  ignored and a log message is printed.
+- If fewer than four valid boards are connected, missing slots are shown in the
+  GUI, but connected slots remain usable.
+- GUI must show live slot status: slot number, role_id, COM port, uid_hash, and
+  connected/error/missing state. Normal four-board operation should be visible as
+  `4/4 connected`.
+- Channel test mode controls RGB lanes only. White PWM is a separate global
+  control.
+- Channel numbers are `1..32`:
+  - `slot = (channel - 1) / 8 + 1`,
+  - `lane = (channel - 1) % 8`.
+- Channel test sends the selected WW/CW levels to all connected slots because
+  white PWM is a global board-level control in the host UI. Only the target RGB
+  lane is lit; all other RGB lanes are black.
+- If a requested channel maps to a missing slot, the GUI logs an error and does
+  not affect other boards.
+- File playback mode and channel test mode are mutually exclusive.
+- File playback imports a valid `.pixelbin`, validates geometry, and loops the
+  file automatically until paused or stopped.
+- `.pixelbin` board slices map to slots 1..4, not directly to physical role IDs.
+- File playback errors for a missing/disconnected slot are logged at the bottom,
+  while other connected slots continue playing.
+- Playback controls include import, pause/resume, stop, and speed control. The
+  effective playback period is `1 / file_fps / speed`.
+- GUI playback should not rely on COM port order.
+- GUI high-rate playback should run outside the main Qt UI path where practical
+  so the UI remains responsive during multi-board sends.
 
 Validation performed:
 

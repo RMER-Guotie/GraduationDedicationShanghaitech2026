@@ -1,18 +1,19 @@
-"""PySide6 debug GUI for one Pixel Controller board."""
+"""PySide6 GUI for multi-board Pixel Controller bench control."""
 
 from __future__ import annotations
 
-from dataclasses import asdict
-import math
-from typing import Callable, Optional
+from dataclasses import dataclass
+import queue
+import threading
+import time
+from typing import Optional
 
 try:
-    from PySide6.QtCore import Qt, QElapsedTimer, QTimer
+    from PySide6.QtCore import Qt, QTimer
     from PySide6.QtWidgets import (
         QApplication,
-        QCheckBox,
-        QComboBox,
         QDoubleSpinBox,
+        QFileDialog,
         QFormLayout,
         QGridLayout,
         QGroupBox,
@@ -30,125 +31,282 @@ except ImportError as exc:  # pragma: no cover - exercised only without PySide6.
     raise SystemExit("PySide6 is not installed. Run: pip install -r requirements.txt") from exc
 
 from . import protocol as proto
-from .device import FrameTiming, PixelDevice
+from .device import PixelDevice
+from .pixelbin import PixelBinReader
 from .serial_link import SerialLink, list_serial_ports
 
+MAX_ACTIVE_BOARDS = 4
+TOTAL_CHANNELS = MAX_ACTIVE_BOARDS * proto.LANES
+DEFAULT_BAUD = 115200
+DEFAULT_RESPONSE_TIMEOUT_S = 1.0
 DEFAULT_CHUNK_DELAY_S = 0.0
-STRESS_POINT_DURATION_MS = 8000
-# Sweep chunk pacing at a fixed target to find the stable closed-loop limit.
-STRESS_POINTS = (
-    (60, 2.00),
-    (60, 1.75),
-    (60, 1.60),
-    (60, 1.50),
-    (60, 1.25),
-    (60, 1.00),
-    (60, 0.75),
-    (60, 0.50),
-    (60, 0.25),
-    (60, 0.00),
-)
+
+
+@dataclass
+class BoardSession:
+    """Open controller session assigned to one GUI playback slot."""
+
+    slot_id: int
+    role_id: int
+    port: str
+    uid_hash: int
+    link: SerialLink
+    device: PixelDevice
+    state: str = "connected"
+    last_error: str = ""
+    ok_frames: int = 0
+    error_count: int = 0
+    skipped_count: int = 0
+
+
+class PlaybackControl:
+    """Thread-safe playback controls shared by the GUI and worker thread."""
+
+    def __init__(self) -> None:
+        self.stop_event = threading.Event()
+        self.pause_event = threading.Event()
+        self._speed = 1.0
+        self._lock = threading.Lock()
+
+    def set_speed(self, value: float) -> None:
+        with self._lock:
+            self._speed = max(0.1, value)
+
+    def get_speed(self) -> float:
+        with self._lock:
+            return self._speed
+
+
+class SlotSender(threading.Thread):
+    """Persistent sender for one board so playback can pace all slots independently."""
+
+    def __init__(self, session: BoardSession, log_queue: queue.Queue[str]) -> None:
+        super().__init__(daemon=True)
+        self.session = session
+        self.log_queue = log_queue
+        self.stop_event = threading.Event()
+        self.items: queue.Queue[tuple[int, bytes, int, int] | None] = queue.Queue(maxsize=1)
+
+    def submit(self, frame_index: int, frame_rgb: bytes, ww: int, cw: int) -> None:
+        item = (frame_index, frame_rgb, ww, cw)
+        try:
+            self.items.put_nowait(item)
+        except queue.Full:
+            self.session.skipped_count += 1
+            try:
+                self.items.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.items.put_nowait(item)
+            except queue.Full:
+                self.session.skipped_count += 1
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        try:
+            self.items.put_nowait(None)
+        except queue.Full:
+            pass
+
+    def run(self) -> None:
+        while not self.stop_event.is_set():
+            item = self.items.get()
+            if item is None:
+                break
+
+            frame_index, frame_rgb, ww, cw = item
+            try:
+                commit = self.session.device.send_frame(
+                    frame_rgb,
+                    ww=ww,
+                    cw=cw,
+                    chunk_delay_s=DEFAULT_CHUNK_DELAY_S,
+                )
+                if commit.status == proto.OK:
+                    self.session.ok_frames += 1
+                    self.session.state = "connected"
+                    self.session.last_error = ""
+                else:
+                    self._record_error(
+                        f"slot {self.session.slot_id} role {self.session.role_id} "
+                        f"frame {frame_index} commit status={commit.status} "
+                        f"mask=0x{commit.received_mask:04x}"
+                    )
+            except Exception as exc:  # noqa: BLE001
+                self._record_error(f"slot {self.session.slot_id} role {self.session.role_id} frame {frame_index}: {exc}")
+
+    def _record_error(self, message: str) -> None:
+        self.session.error_count += 1
+        self.session.state = "error"
+        self.session.last_error = message
+        self.log_queue.put(message)
+
+
+class PlaybackWorker(threading.Thread):
+    """Loop a pixelbin file and distribute board slices to slot senders."""
+
+    def __init__(
+        self,
+        path: str,
+        sessions: dict[int, BoardSession],
+        control: PlaybackControl,
+        log_queue: queue.Queue[str],
+    ) -> None:
+        super().__init__(daemon=True)
+        self.path = path
+        self.sessions = dict(sessions)
+        self.control = control
+        self.log_queue = log_queue
+        self.senders: dict[int, SlotSender] = {}
+
+    def run(self) -> None:
+        try:
+            with PixelBinReader(self.path) as reader:
+                self._start_senders()
+                self._log_missing_slots(reader.header.board_count)
+                self.log_queue.put(
+                    f"PLAY started file={self.path} fps={reader.header.fps} frames={reader.header.frame_count}"
+                )
+                frame_count = 0
+                next_deadline = time.perf_counter()
+
+                while not self.control.stop_event.is_set():
+                    if self.control.pause_event.is_set():
+                        next_deadline = time.perf_counter()
+                        time.sleep(0.05)
+                        continue
+
+                    frame = reader.read_frame()
+                    if frame is None:
+                        reader.seek_frame(0)
+                        continue
+
+                    for slot_id, board_frame in enumerate(frame.board_frames, start=1):
+                        sender = self.senders.get(slot_id)
+                        if sender is not None:
+                            sender.submit(frame.index, board_frame, frame.ww, frame.cw)
+
+                    frame_count += 1
+                    if frame_count % max(1, reader.header.fps) == 0:
+                        self.log_queue.put(f"PLAY submitted={frame_count}")
+
+                    speed = self.control.get_speed()
+                    period_s = 1.0 / (reader.header.fps * speed)
+                    next_deadline += period_s
+                    sleep_s = next_deadline - time.perf_counter()
+                    if sleep_s > 0.0:
+                        time.sleep(sleep_s)
+                    else:
+                        next_deadline = time.perf_counter()
+        except Exception as exc:  # noqa: BLE001
+            self.log_queue.put(f"PLAY failed: {exc}")
+        finally:
+            self._stop_senders()
+            self.log_queue.put("PLAY stopped")
+
+    def _start_senders(self) -> None:
+        for slot_id, session in self.sessions.items():
+            sender = SlotSender(session, self.log_queue)
+            self.senders[slot_id] = sender
+            sender.start()
+
+    def _stop_senders(self) -> None:
+        for sender in self.senders.values():
+            sender.stop()
+        for sender in self.senders.values():
+            sender.join(timeout=1.0)
+
+    def _log_missing_slots(self, board_count: int) -> None:
+        for slot_id in range(1, min(board_count, MAX_ACTIVE_BOARDS) + 1):
+            if slot_id not in self.sessions:
+                self.log_queue.put(f"slot {slot_id} missing, playback will skip it")
 
 
 class MainWindow(QMainWindow):
-    """Small synchronous debug panel for firmware bring-up."""
+    """Four-board GUI controller for bench testing and file playback."""
 
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Pixel Controller Host Tool")
-        self.resize(920, 620)
+        self.resize(980, 680)
 
-        self.device: Optional[PixelDevice] = None
-        self.link: Optional[SerialLink] = None
-        self.breath_timer = QTimer(self)
-        self.breath_timer.timeout.connect(self.send_breath_frame)
-        self.breath_phase = 0.0
-        self.breath_busy = False
-        self.breath_sent_frames = 0
-        self.breath_fps_timer = QElapsedTimer()
-        self.stress_timer = QTimer(self)
-        self.stress_timer.timeout.connect(self.send_stress_frame)
-        self.stress_index = 0
-        self.stress_busy = False
-        self.stress_ok_frames = 0
-        self.stress_timeout_count = 0
-        self.stress_commit_error_count = 0
-        self.stress_last_mask = 0
-        self.stress_target_fps = 0
-        self.stress_delay_ms = 0.0
-        self.stress_start_errors = 0
-        self.stress_start_commits = 0
-        self.stress_frame_time_total_ms = 0.0
-        self.stress_begin_total_ms = 0.0
-        self.stress_chunks_total_ms = 0.0
-        self.stress_pacing_total_ms = 0.0
-        self.stress_commit_write_total_ms = 0.0
-        self.stress_response_wait_total_ms = 0.0
-        self.stress_elapsed_timer = QElapsedTimer()
+        self.sessions: dict[int, BoardSession] = {}
+        self.playback_path: Optional[str] = None
+        self.playback_control = PlaybackControl()
+        self.playback_worker: Optional[PlaybackWorker] = None
+        self.log_queue: queue.Queue[str] = queue.Queue()
+
+        self.log_timer = QTimer(self)
+        self.log_timer.timeout.connect(self._drain_log_queue)
+        self.log_timer.start(100)
+
+        self.status_timer = QTimer(self)
+        self.status_timer.timeout.connect(self.update_slot_status)
+        self.status_timer.start(500)
 
         root = QWidget(self)
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
 
         layout.addWidget(self._build_connection_group())
-        layout.addWidget(self._build_status_group())
-        layout.addWidget(self._build_output_group())
+        layout.addWidget(self._build_slot_status_group())
+        layout.addWidget(self._build_control_group())
         layout.addWidget(self._build_log_group(), 1)
 
-        self.refresh_ports()
-        self._set_connected(False)
+        self._set_playback_running(False)
+        self.update_slot_status()
 
     def _build_connection_group(self) -> QGroupBox:
         group = QGroupBox("Connection")
         row = QHBoxLayout(group)
 
-        self.port_combo = QComboBox()
-        self.port_combo.setMinimumWidth(180)
         self.baud_spin = QSpinBox()
         self.baud_spin.setRange(1200, 4000000)
-        self.baud_spin.setValue(115200)
+        self.baud_spin.setValue(DEFAULT_BAUD)
         self.baud_spin.setSingleStep(115200)
 
-        self.refresh_button = QPushButton("Refresh")
-        self.connect_button = QPushButton("Connect")
+        self.auto_connect_button = QPushButton("Auto Connect")
         self.disconnect_button = QPushButton("Disconnect")
+        self.connection_summary_label = QLabel("0/4 connected")
+        self.connection_summary_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
-        self.refresh_button.clicked.connect(self.refresh_ports)
-        self.connect_button.clicked.connect(self.connect_device)
-        self.disconnect_button.clicked.connect(self.disconnect_device)
+        self.auto_connect_button.clicked.connect(lambda: self.auto_connect())
+        self.disconnect_button.clicked.connect(lambda: self.disconnect_all())
 
-        row.addWidget(QLabel("Port"))
-        row.addWidget(self.port_combo, 1)
         row.addWidget(QLabel("Baud"))
         row.addWidget(self.baud_spin)
-        row.addWidget(self.refresh_button)
-        row.addWidget(self.connect_button)
+        row.addWidget(self.auto_connect_button)
         row.addWidget(self.disconnect_button)
+        row.addWidget(self.connection_summary_label, 1)
         return group
 
-    def _build_status_group(self) -> QGroupBox:
-        group = QGroupBox("Device")
+    def _build_slot_status_group(self) -> QGroupBox:
+        group = QGroupBox("Slots")
         layout = QGridLayout(group)
+        self.slot_labels: dict[int, QLabel] = {}
 
-        self.hello_button = QPushButton("HELLO")
-        self.status_button = QPushButton("STATUS")
-        self.auto_status_check = QCheckBox("Auto status after command")
-        self.auto_status_check.setChecked(True)
+        layout.addWidget(QLabel("Slot"), 0, 0)
+        layout.addWidget(QLabel("Output columns"), 0, 1)
+        layout.addWidget(QLabel("Board"), 0, 2)
+        layout.addWidget(QLabel("Port"), 0, 3)
+        layout.addWidget(QLabel("UID"), 0, 4)
+        layout.addWidget(QLabel("State"), 0, 5)
 
-        self.info_label = QLabel("Not connected")
-        self.info_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        for slot_id in range(1, MAX_ACTIVE_BOARDS + 1):
+            layout.addWidget(QLabel(str(slot_id)), slot_id, 0)
+            first_col = (slot_id - 1) * proto.LANES + 1
+            last_col = slot_id * proto.LANES
+            layout.addWidget(QLabel(f"{first_col}-{last_col}"), slot_id, 1)
+            label = QLabel("missing")
+            label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.slot_labels[slot_id] = label
+            layout.addWidget(label, slot_id, 2, 1, 4)
 
-        self.hello_button.clicked.connect(self.request_hello)
-        self.status_button.clicked.connect(self.request_status)
-
-        layout.addWidget(self.hello_button, 0, 0)
-        layout.addWidget(self.status_button, 0, 1)
-        layout.addWidget(self.auto_status_check, 0, 2)
-        layout.addWidget(self.info_label, 1, 0, 1, 3)
         return group
 
-    def _build_output_group(self) -> QGroupBox:
-        group = QGroupBox("Output")
+    def _build_control_group(self) -> QGroupBox:
+        group = QGroupBox("Control")
         layout = QGridLayout(group)
 
         self.r_spin = self._byte_spin(255)
@@ -156,21 +314,9 @@ class MainWindow(QMainWindow):
         self.b_spin = self._byte_spin(0)
         self.ww_spin = self._level_spin(0)
         self.cw_spin = self._level_spin(0)
-        self.breath_fps_spin = QSpinBox()
-        self.breath_fps_spin.setRange(1, 90)
-        self.breath_fps_spin.setValue(60)
-        self.breath_period_spin = QDoubleSpinBox()
-        self.breath_period_spin.setRange(0.5, 20.0)
-        self.breath_period_spin.setDecimals(1)
-        self.breath_period_spin.setSingleStep(0.5)
-        self.breath_period_spin.setValue(3.0)
-        self.breath_period_spin.setSuffix(" s")
-        self.breath_delay_spin = QDoubleSpinBox()
-        self.breath_delay_spin.setRange(0.5, 3.0)
-        self.breath_delay_spin.setDecimals(2)
-        self.breath_delay_spin.setSingleStep(0.25)
-        self.breath_delay_spin.setValue(DEFAULT_CHUNK_DELAY_S * 1000.0)
-        self.breath_delay_spin.setSuffix(" ms")
+        self.channel_spin = QSpinBox()
+        self.channel_spin.setRange(1, TOTAL_CHANNELS)
+        self.channel_spin.setValue(1)
 
         form = QFormLayout()
         form.addRow("R", self.r_spin)
@@ -178,32 +324,38 @@ class MainWindow(QMainWindow):
         form.addRow("B", self.b_spin)
         form.addRow("WW", self.ww_spin)
         form.addRow("CW", self.cw_spin)
-        form.addRow("Breath FPS", self.breath_fps_spin)
-        form.addRow("Breath period", self.breath_period_spin)
-        form.addRow("Breath delay", self.breath_delay_spin)
+        form.addRow("Channel", self.channel_spin)
 
-        self.send_solid_button = QPushButton("Send Solid")
-        self.start_breath_button = QPushButton("Start Breath")
-        self.stop_breath_button = QPushButton("Stop")
-        self.start_stress_button = QPushButton("Start Stress")
-        self.stop_stress_button = QPushButton("Stop Stress")
+        self.channel_test_button = QPushButton("Send Channel Test")
+        self.import_file_button = QPushButton("Import And Play")
+        self.pause_button = QPushButton("Pause")
+        self.stop_playback_button = QPushButton("Stop")
+        self.speed_spin = QDoubleSpinBox()
+        self.speed_spin.setRange(0.25, 4.0)
+        self.speed_spin.setDecimals(2)
+        self.speed_spin.setSingleStep(0.25)
+        self.speed_spin.setValue(1.0)
+        self.speed_spin.setSuffix("x")
+        self.file_label = QLabel("No file")
+        self.file_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
-        self.send_solid_button.clicked.connect(self.send_solid)
-        self.start_breath_button.clicked.connect(self.start_breath)
-        self.stop_breath_button.clicked.connect(self.stop_breath)
-        self.start_stress_button.clicked.connect(self.start_stress)
-        self.stop_stress_button.clicked.connect(self.stop_stress)
+        self.channel_test_button.clicked.connect(lambda: self.send_channel_test())
+        self.import_file_button.clicked.connect(lambda: self.import_and_play())
+        self.pause_button.clicked.connect(lambda: self.toggle_pause())
+        self.stop_playback_button.clicked.connect(lambda: self.stop_playback())
+        self.speed_spin.valueChanged.connect(self.playback_control.set_speed)
 
-        button_row = QHBoxLayout()
-        button_row.addWidget(self.send_solid_button)
-        button_row.addWidget(self.start_breath_button)
-        button_row.addWidget(self.stop_breath_button)
-        button_row.addWidget(self.start_stress_button)
-        button_row.addWidget(self.stop_stress_button)
-        button_row.addStretch(1)
+        playback_row = QHBoxLayout()
+        playback_row.addWidget(self.import_file_button)
+        playback_row.addWidget(self.pause_button)
+        playback_row.addWidget(self.stop_playback_button)
+        playback_row.addWidget(QLabel("Speed"))
+        playback_row.addWidget(self.speed_spin)
+        playback_row.addWidget(self.file_label, 1)
 
         layout.addLayout(form, 0, 0)
-        layout.addLayout(button_row, 0, 1)
+        layout.addWidget(self.channel_test_button, 1, 0)
+        layout.addLayout(playback_row, 0, 1, 2, 1)
         layout.setColumnStretch(1, 1)
         return group
 
@@ -226,424 +378,231 @@ class MainWindow(QMainWindow):
     def _level_spin(value: int) -> QSpinBox:
         spin = QSpinBox()
         spin.setRange(0, 1000)
-        spin.setValue(value)
         spin.setSingleStep(10)
+        spin.setValue(value)
         return spin
 
-    def refresh_ports(self) -> None:
-        current = self.port_combo.currentText()
-        self.port_combo.clear()
+    def auto_connect(self) -> None:
+        self.stop_playback()
+        self.disconnect_all(log_disconnect=False)
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        self.auto_connect_button.setEnabled(False)
+
+        found: list[tuple[int, str, int, SerialLink, PixelDevice]] = []
         try:
             ports = list_serial_ports()
-        except Exception as exc:  # noqa: BLE001
-            self.log(f"Port scan failed: {exc}")
-            ports = []
-        self.port_combo.addItems(ports)
-        if current:
-            index = self.port_combo.findText(current)
-            if index >= 0:
-                self.port_combo.setCurrentIndex(index)
+            self.log(f"SCAN ports={ports}")
+            for port in ports:
+                link = SerialLink(port, baudrate=self.baud_spin.value(), timeout=0.05)
+                try:
+                    link.open()
+                    device = PixelDevice(link=link, response_timeout=DEFAULT_RESPONSE_TIMEOUT_S)
+                    hello = device.hello()
+                    if 1 <= hello.role_id <= 20:
+                        found.append((hello.role_id, port, hello.uid_hash, link, device))
+                        self.log(f"[{port}] role={hello.role_id} uid={proto.format_uid(hello.uid_hash)}")
+                    else:
+                        self.log(f"[{port}] invalid role={hello.role_id}, ignored")
+                        link.close()
+                except Exception as exc:  # noqa: BLE001
+                    self.log(f"[{port}] no response: {exc}")
+                    link.close()
 
-    def connect_device(self) -> None:
-        port = self.port_combo.currentText().strip()
-        if not port:
-            QMessageBox.warning(self, "No port", "Select a serial port first.")
-            return
+            found.sort(key=lambda item: item[0])
+            for ignored in found[MAX_ACTIVE_BOARDS:]:
+                role_id, port, uid_hash, link, _device = ignored
+                self.log(f"[{port}] role={role_id} uid={proto.format_uid(uid_hash)} ignored above 4-board limit")
+                link.close()
 
-        self.disconnect_device(log_disconnect=False)
-        try:
-            self.link = SerialLink(port, baudrate=self.baud_spin.value(), timeout=0.05)
-            self.link.open()
-            self.device = PixelDevice(self.link)
-            self._set_connected(True)
-            self.log(f"Connected {port} @ {self.baud_spin.value()}")
-            self.request_hello()
-        except Exception as exc:  # noqa: BLE001
-            self.device = None
-            self.link = None
-            self._set_connected(False)
-            self.log(f"Connect failed: {exc}")
-            QMessageBox.critical(self, "Connect failed", str(exc))
+            for slot_id, item in enumerate(found[:MAX_ACTIVE_BOARDS], start=1):
+                role_id, port, uid_hash, link, device = item
+                self.sessions[slot_id] = BoardSession(slot_id, role_id, port, uid_hash, link, device)
+                self.log(f"slot {slot_id} <= role {role_id} on {port}")
 
-    def disconnect_device(self, log_disconnect: bool = True) -> None:
-        self.stop_breath(log_stop=False)
-        self.stop_stress(log_stop=False)
-        if self.link is not None:
-            self.link.close()
-        if log_disconnect and self.device is not None:
-            self.log("Disconnected")
-        self.device = None
-        self.link = None
-        self._set_connected(False)
-
-    def request_hello(self) -> None:
-        def op() -> None:
-            assert self.device is not None
-            hello = self.device.hello()
-            self.info_label.setText(
-                f"uid={proto.format_uid(hello.uid_hash)} role=0x{hello.role_id:02x} "
-                f"lanes={hello.lanes} leds/lane={hello.leds_per_lane} chunks={hello.chunk_count}"
-            )
-            self.log(f"HELLO {asdict(hello)}")
-
-        self._run_device_op("HELLO", op)
-
-    def request_status(self) -> None:
-        def op() -> None:
-            assert self.device is not None
-            status = self.device.status()
-            self._show_status(status)
-
-        self._run_device_op("STATUS", op)
-
-    def send_solid(self) -> None:
-        self.stop_breath(log_stop=False)
-        self.stop_stress(log_stop=False)
-
-        def op() -> None:
-            assert self.device is not None
-            commit = self.device.send_solid(
-                self.r_spin.value(),
-                self.g_spin.value(),
-                self.b_spin.value(),
-                ww=self.ww_spin.value(),
-                cw=self.cw_spin.value(),
-                chunk_delay_s=self._chunk_delay_s(),
-            )
-            self.log(f"SOLID commit={asdict(commit)} {self._last_frame_timing_text()}")
-            self._maybe_status()
-
-        self._run_device_op("Send solid", op)
-
-    def start_breath(self) -> None:
-        if self.device is None:
-            QMessageBox.warning(self, "Not connected", "Connect to a device first.")
-            return
-
-        self.stop_stress(log_stop=False)
-        interval_ms = max(1, int(1000 / self.breath_fps_spin.value()))
-        self.breath_phase = 0.0
-        self.breath_sent_frames = 0
-        self.breath_fps_timer.restart()
-        self.breath_timer.start(interval_ms)
-        self._set_controls_enabled(True)
-        self.log(
-            f"BREATH started target={self.breath_fps_spin.value()}fps "
-            f"period={self.breath_period_spin.value():.1f}s delay={self._breath_chunk_delay_s() * 1000.0:.2f}ms"
-        )
-
-    def stop_breath(self, log_stop: bool = True) -> None:
-        if self.breath_timer.isActive():
-            self.breath_timer.stop()
-            if log_stop:
-                self.log("BREATH stopped")
-        self._set_controls_enabled(self.device is not None)
-
-    def send_breath_frame(self) -> None:
-        if self.device is None or self.breath_busy:
-            return
-
-        self.breath_busy = True
-        try:
-            commit = self.device.send_frame(
-                self._build_breath_frame(),
-                ww=self.ww_spin.value(),
-                cw=self.cw_spin.value(),
-                chunk_delay_s=self._breath_chunk_delay_s(),
-            )
-            self.breath_phase += 1.0 / max(1, self.breath_fps_spin.value())
-            self._update_breath_fps_log(commit.status)
-        except Exception as exc:  # noqa: BLE001
-            self.stop_breath(log_stop=False)
-            self.log(f"BREATH failed: {exc}")
-            QMessageBox.critical(self, "Breath failed", str(exc))
+            if len(self.sessions) < MAX_ACTIVE_BOARDS:
+                for slot_id in range(len(self.sessions) + 1, MAX_ACTIVE_BOARDS + 1):
+                    self.log(f"slot {slot_id} missing")
         finally:
-            self.breath_busy = False
+            QApplication.restoreOverrideCursor()
+            self.auto_connect_button.setEnabled(True)
+            self.update_slot_status()
 
-    def _build_breath_frame(self) -> bytes:
-        period_s = max(0.5, self.breath_period_spin.value())
-        breath = 0.5 - 0.5 * math.cos((2.0 * math.pi * self.breath_phase) / period_s)
-        floor = 0.08
-        level = floor + (1.0 - floor) * breath
-        frame = bytearray()
+    def disconnect_all(self, log_disconnect: bool = True) -> None:
+        self.stop_playback()
+        for session in self.sessions.values():
+            session.link.close()
+        if log_disconnect and self.sessions:
+            self.log("Disconnected all boards")
+        self.sessions.clear()
+        self.update_slot_status()
 
-        for lane in range(proto.LANES):
-            lane_hue = (self.breath_phase * 0.12 + lane / proto.LANES) % 1.0
-            for pixel in range(proto.LEDS_PER_LANE):
-                hue = (lane_hue + pixel / (proto.LEDS_PER_LANE * 2.0)) % 1.0
-                r, g, b = self._hsv_to_rgb(hue, 1.0, level)
-                frame.extend((r, g, b))
+    def send_channel_test(self) -> None:
+        if self.is_playback_active():
+            self.log("Channel test blocked while file playback is active")
+            QMessageBox.warning(self, "Playback active", "Pause or stop file playback before channel testing.")
+            return
 
+        channel = self.channel_spin.value()
+        slot_id = ((channel - 1) // proto.LANES) + 1
+        lane = (channel - 1) % proto.LANES
+        session = self.sessions.get(slot_id)
+        if session is None:
+            self.log(f"channel {channel} maps to missing slot {slot_id}")
+            return
+
+        target_frame = self._build_channel_frame(lane)
+        black_frame = bytes(proto.LANES * proto.LEDS_PER_LANE * 3)
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        self.channel_test_button.setEnabled(False)
+        try:
+            for current_slot_id, current_session in sorted(self.sessions.items()):
+                frame = target_frame if current_slot_id == slot_id else black_frame
+                try:
+                    commit = current_session.device.send_frame(
+                        frame,
+                        ww=self.ww_spin.value(),
+                        cw=self.cw_spin.value(),
+                        chunk_delay_s=DEFAULT_CHUNK_DELAY_S,
+                    )
+                    if commit.status == proto.OK:
+                        current_session.ok_frames += 1
+                        current_session.state = "connected"
+                        current_session.last_error = ""
+                    else:
+                        current_session.error_count += 1
+                        current_session.state = "error"
+                        current_session.last_error = f"commit status={commit.status}"
+                    self.log(
+                        f"CHANNEL channel={channel} slot={current_slot_id} role={current_session.role_id} "
+                        f"target_lane={lane + 1 if current_slot_id == slot_id else 0} "
+                        f"commit_status={commit.status} mask=0x{commit.received_mask:04x}"
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    current_session.error_count += 1
+                    current_session.state = "error"
+                    current_session.last_error = str(exc)
+                    self.log(f"CHANNEL channel={channel} slot={current_slot_id} failed: {exc}")
+        finally:
+            QApplication.restoreOverrideCursor()
+            self.channel_test_button.setEnabled(True)
+            self.update_slot_status()
+
+    def _build_channel_frame(self, lane: int) -> bytes:
+        frame = bytearray(proto.LANES * proto.LEDS_PER_LANE * 3)
+        pixel = bytes((self.r_spin.value(), self.g_spin.value(), self.b_spin.value()))
+        lane_offset = lane * proto.LEDS_PER_LANE * 3
+        for index in range(proto.LEDS_PER_LANE):
+            offset = lane_offset + index * 3
+            frame[offset : offset + 3] = pixel
         return bytes(frame)
 
-    @staticmethod
-    def _hsv_to_rgb(hue: float, saturation: float, value: float) -> tuple[int, int, int]:
-        hue = hue % 1.0
-        sector = int(hue * 6.0)
-        fraction = hue * 6.0 - sector
-        p = value * (1.0 - saturation)
-        q = value * (1.0 - fraction * saturation)
-        t = value * (1.0 - (1.0 - fraction) * saturation)
+    def import_and_play(self) -> None:
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Open pixelbin file",
+            "",
+            "PixelBin Files (*.pixelbin *.bin);;All Files (*)",
+        )
+        if not path:
+            return
 
-        if sector == 0:
-            r, g, b = value, t, p
-        elif sector == 1:
-            r, g, b = q, value, p
-        elif sector == 2:
-            r, g, b = p, value, t
-        elif sector == 3:
-            r, g, b = p, q, value
-        elif sector == 4:
-            r, g, b = t, p, value
+        try:
+            with PixelBinReader(path) as reader:
+                if reader.header.board_count != MAX_ACTIVE_BOARDS:
+                    raise ValueError(f"expected {MAX_ACTIVE_BOARDS} boards, got {reader.header.board_count}")
+                if reader.header.lanes != proto.LANES or reader.header.leds_per_lane != proto.LEDS_PER_LANE:
+                    raise ValueError("pixelbin geometry does not match current protocol")
+                self.file_label.setText(path)
+                self.playback_path = path
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"Import failed: {exc}")
+            QMessageBox.critical(self, "Import failed", str(exc))
+            return
+
+        self.start_playback()
+
+    def start_playback(self) -> None:
+        if self.playback_path is None:
+            return
+        if not self.sessions:
+            self.log("No connected boards; playback not started")
+            QMessageBox.warning(self, "No boards", "Auto connect at least one board before playback.")
+            return
+
+        self.stop_playback()
+        self.playback_control.stop_event.clear()
+        self.playback_control.pause_event.clear()
+        self.playback_control.set_speed(self.speed_spin.value())
+        self.playback_worker = PlaybackWorker(self.playback_path, self.sessions, self.playback_control, self.log_queue)
+        self.playback_worker.start()
+        self._set_playback_running(True)
+
+    def toggle_pause(self) -> None:
+        if self.playback_worker is None or not self.playback_worker.is_alive():
+            return
+        if self.playback_control.pause_event.is_set():
+            self.playback_control.pause_event.clear()
+            self.pause_button.setText("Pause")
+            self.log("PLAY resumed")
         else:
-            r, g, b = value, p, q
+            self.playback_control.pause_event.set()
+            self.pause_button.setText("Resume")
+            self.log("PLAY paused")
 
-        return int(r * 255.0), int(g * 255.0), int(b * 255.0)
+    def stop_playback(self) -> None:
+        if self.playback_worker is not None:
+            self.playback_control.stop_event.set()
+            self.playback_worker.join(timeout=1.0)
+        self.playback_worker = None
+        self._set_playback_running(False)
 
-    def _chunk_delay_s(self) -> float:
-        return DEFAULT_CHUNK_DELAY_S
+    def is_playback_active(self) -> bool:
+        return self.playback_worker is not None and self.playback_worker.is_alive()
 
-    def _breath_chunk_delay_s(self) -> float:
-        return self.breath_delay_spin.value() / 1000.0
+    def _set_playback_running(self, running: bool) -> None:
+        self.channel_test_button.setEnabled(not running)
+        self.pause_button.setEnabled(running)
+        self.stop_playback_button.setEnabled(running)
+        self.pause_button.setText("Pause")
 
-    def _update_breath_fps_log(self, status: int) -> None:
-        self.breath_sent_frames += 1
-        elapsed_ms = self.breath_fps_timer.elapsed()
-        if elapsed_ms >= 1000:
-            actual_fps = self.breath_sent_frames * 1000.0 / elapsed_ms
-            self.log(
-                f"BREATH actual={actual_fps:.1f}fps target={self.breath_fps_spin.value()} "
-                f"status={status} {self._last_frame_timing_text()}"
+    def update_slot_status(self) -> None:
+        connected_count = len(self.sessions)
+        self.connection_summary_label.setText(f"{connected_count}/{MAX_ACTIVE_BOARDS} connected")
+
+        for slot_id in range(1, MAX_ACTIVE_BOARDS + 1):
+            label = self.slot_labels.get(slot_id)
+            if label is None:
+                continue
+            session = self.sessions.get(slot_id)
+            if session is None:
+                label.setText("missing")
+                label.setStyleSheet("color: #a04040;")
+                continue
+
+            error_text = f" last={session.last_error}" if session.last_error else ""
+            label.setText(
+                f"role={session.role_id} port={session.port} uid={proto.format_uid(session.uid_hash)} "
+                f"state={session.state} ok={session.ok_frames} err={session.error_count} "
+                f"skip={session.skipped_count}{error_text}"
             )
-            self.breath_sent_frames = 0
-            self.breath_fps_timer.restart()
+            label.setStyleSheet("color: #206020;" if session.state == "connected" else "color: #a06000;")
 
-    def start_stress(self) -> None:
-        if self.device is None:
-            QMessageBox.warning(self, "Not connected", "Connect to a device first.")
-            return
+        if self.playback_worker is not None and not self.playback_worker.is_alive():
+            self.playback_worker = None
+            self._set_playback_running(False)
 
-        self.stop_breath(log_stop=False)
-        self.stress_index = 0
-        self.log("STRESS started")
-        self._start_stress_point()
-
-    def stop_stress(self, log_stop: bool = True) -> None:
-        if self.stress_timer.isActive():
-            self.stress_timer.stop()
-            if log_stop:
-                self.log("STRESS stopped")
-        self._set_controls_enabled(self.device is not None)
-
-    def _start_stress_point(self) -> None:
-        if self.device is None:
-            return
-
-        if self.stress_index >= len(STRESS_POINTS):
-            self.stress_timer.stop()
-            self.log("STRESS complete")
-            self._set_controls_enabled(True)
-            return
-
-        self.stress_target_fps, self.stress_delay_ms = STRESS_POINTS[self.stress_index]
-        self.stress_ok_frames = 0
-        self.stress_timeout_count = 0
-        self.stress_commit_error_count = 0
-        self.stress_last_mask = 0
-        self.stress_frame_time_total_ms = 0.0
-        self.stress_begin_total_ms = 0.0
-        self.stress_chunks_total_ms = 0.0
-        self.stress_pacing_total_ms = 0.0
-        self.stress_commit_write_total_ms = 0.0
-        self.stress_response_wait_total_ms = 0.0
-        start_status = self._try_status()
-        if start_status is not None:
-            self.stress_start_errors = start_status.error_count
-            self.stress_start_commits = start_status.commit_count
-        else:
-            self.stress_start_errors = 0
-            self.stress_start_commits = 0
-        self.breath_phase = 0.0
-        self.stress_elapsed_timer.restart()
-        self.stress_timer.start(max(1, int(1000 / self.stress_target_fps)))
-        self._set_controls_enabled(True)
-        self.log(
-            f"STRESS point {self.stress_index + 1}/{len(STRESS_POINTS)} "
-            f"target={self.stress_target_fps}fps delay={self.stress_delay_ms:.2f}ms"
-        )
-
-    def send_stress_frame(self) -> None:
-        if self.device is None or self.stress_busy:
-            return
-
-        self.stress_busy = True
-        try:
-            frame_start_ms = self.stress_elapsed_timer.elapsed()
-            commit = self.device.send_frame(
-                self._build_breath_frame(),
-                ww=self.ww_spin.value(),
-                cw=self.cw_spin.value(),
-                chunk_delay_s=self.stress_delay_ms / 1000.0,
-            )
-            self._accumulate_stress_timing(self.device.last_frame_timing)
-            if self.device.last_frame_timing is None:
-                self.stress_frame_time_total_ms += (self.stress_elapsed_timer.elapsed() - frame_start_ms)
-            self.stress_last_mask = commit.received_mask
-            if commit.status == proto.OK:
-                self.stress_ok_frames += 1
-            else:
-                self.stress_commit_error_count += 1
-            self.breath_phase += 1.0 / max(1, self.stress_target_fps)
-        except Exception as exc:  # noqa: BLE001
-            self.stress_timeout_count += 1
-            self._finish_stress_point(f"timeout={exc}")
-            self.stress_index += 1
-            self._start_stress_point()
-            return
-        finally:
-            self.stress_busy = False
-
-        if self.stress_elapsed_timer.elapsed() >= STRESS_POINT_DURATION_MS:
-            self._finish_stress_point("done")
-            self.stress_index += 1
-            self._start_stress_point()
-
-    def _finish_stress_point(self, reason: str) -> None:
-        self.stress_timer.stop()
-        elapsed_ms = max(1, self.stress_elapsed_timer.elapsed())
-        actual_fps = self.stress_ok_frames * 1000.0 / elapsed_ms
-        measured_frames = self.stress_ok_frames + self.stress_commit_error_count
-        avg_frame_ms = self.stress_frame_time_total_ms / max(1, measured_frames)
-        status_text = self._read_status_delta_summary()
-        self.log(
-            f"STRESS result target={self.stress_target_fps}fps delay={self.stress_delay_ms:.2f}ms "
-            f"actual={actual_fps:.1f}fps avg_frame={avg_frame_ms:.1f}ms ok={self.stress_ok_frames} "
-            f"timeout={self.stress_timeout_count} commit_err={self.stress_commit_error_count} "
-            f"last_mask=0x{self.stress_last_mask:04x} reason={reason} "
-            f"{self._stress_timing_avg_text(measured_frames)} {status_text}"
-        )
-
-    def _accumulate_stress_timing(self, timing: Optional[FrameTiming]) -> None:
-        if timing is None:
-            return
-
-        self.stress_frame_time_total_ms += timing.total_ms
-        self.stress_begin_total_ms += timing.begin_ms
-        self.stress_chunks_total_ms += timing.chunks_ms
-        self.stress_pacing_total_ms += timing.pacing_ms
-        self.stress_commit_write_total_ms += timing.commit_write_ms
-        self.stress_response_wait_total_ms += timing.response_wait_ms
-
-    def _stress_timing_avg_text(self, frame_count: int) -> str:
-        count = max(1, frame_count)
-        return (
-            f"avg_begin={self.stress_begin_total_ms / count:.1f}ms "
-            f"avg_chunks={self.stress_chunks_total_ms / count:.1f}ms "
-            f"avg_pacing={self.stress_pacing_total_ms / count:.1f}ms "
-            f"avg_commit_wr={self.stress_commit_write_total_ms / count:.1f}ms "
-            f"avg_wait_rsp={self.stress_response_wait_total_ms / count:.1f}ms"
-        )
-
-    def _last_frame_timing_text(self) -> str:
-        if self.device is None:
-            return "timing=unavailable"
-
-        timing = self.device.last_frame_timing
-        if timing is None:
-            return "timing=unavailable"
-
-        return (
-            f"timing total={timing.total_ms:.1f}ms begin={timing.begin_ms:.1f}ms "
-            f"chunks={timing.chunks_ms:.1f}ms pacing={timing.pacing_ms:.1f}ms "
-            f"commit_wr={timing.commit_write_ms:.1f}ms wait_rsp={timing.response_wait_ms:.1f}ms"
-        )
-
-    def _try_status(self) -> Optional[proto.StatusResponse]:
-        if self.device is None:
-            return None
-
-        try:
-            return self.device.status()
-        except Exception as exc:  # noqa: BLE001
-            self.log(f"STATUS read failed: {exc}")
-            return None
-
-    def _read_status_delta_summary(self) -> str:
-        status = self._try_status()
-        if status is None:
-            return "status=unavailable"
-
-        error_delta = status.error_count - self.stress_start_errors
-        commit_delta = status.commit_count - self.stress_start_commits
-
-        return (
-            f"rx_used={status.rx_used} error_delta={error_delta} errors={status.error_count} "
-            f"commit_delta={commit_delta} commits={status.commit_count} "
-            f"flags={proto.status_flags_to_text(status.status_flags)}"
-        )
-
-    def _run_device_op(self, name: str, op: Callable[[], None]) -> None:
-        if self.device is None:
-            QMessageBox.warning(self, "Not connected", "Connect to a device first.")
-            return
-
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        self._set_controls_enabled(False)
-        try:
-            op()
-        except Exception as exc:  # noqa: BLE001
-            self.log(f"{name} failed: {exc}")
-            QMessageBox.critical(self, f"{name} failed", str(exc))
-        finally:
-            self._set_controls_enabled(True)
-            QApplication.restoreOverrideCursor()
-
-    def _maybe_status(self) -> None:
-        if self.auto_status_check.isChecked() and self.device is not None:
-            status = self.device.status()
-            self._show_status(status)
-
-    def _show_status(self, status: proto.StatusResponse) -> None:
-        self.log(
-            "STATUS "
-            f"uid={proto.format_uid(status.uid_hash)} "
-            f"flags={proto.status_flags_to_text(status.status_flags)} "
-            f"rc=0b{status.rc_stable_bits:04b} "
-            f"current={status.current_ma}mA ww={status.ww_current} cw={status.cw_current} "
-            f"frame={status.frame_id} commits={status.commit_count} errors={status.error_count}"
-        )
-
-    def _set_connected(self, connected: bool) -> None:
-        self.connect_button.setEnabled(not connected)
-        self.disconnect_button.setEnabled(connected)
-        self.hello_button.setEnabled(connected)
-        self.status_button.setEnabled(connected)
-        self.send_solid_button.setEnabled(connected)
-        self.start_breath_button.setEnabled(connected)
-        self.stop_breath_button.setEnabled(connected and self.breath_timer.isActive())
-        self.start_stress_button.setEnabled(connected)
-        self.stop_stress_button.setEnabled(connected and self.stress_timer.isActive())
-
-    def _set_controls_enabled(self, enabled: bool) -> None:
-        if self.device is None:
-            self._set_connected(False)
-            return
-        busy = self.breath_timer.isActive() or self.stress_timer.isActive()
-        self.refresh_button.setEnabled(enabled)
-        self.disconnect_button.setEnabled(enabled)
-        self.hello_button.setEnabled(enabled and not busy)
-        self.status_button.setEnabled(enabled and not busy)
-        self.send_solid_button.setEnabled(enabled and not busy)
-        self.start_breath_button.setEnabled(enabled and not busy)
-        self.stop_breath_button.setEnabled(enabled and self.breath_timer.isActive())
-        self.start_stress_button.setEnabled(enabled and not busy)
-        self.stop_stress_button.setEnabled(enabled and self.stress_timer.isActive())
+    def _drain_log_queue(self) -> None:
+        while True:
+            try:
+                self.log(self.log_queue.get_nowait())
+            except queue.Empty:
+                break
 
     def log(self, message: str) -> None:
         self.log_text.append(message)
 
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
-        self.disconnect_device(log_disconnect=False)
+        self.disconnect_all(log_disconnect=False)
         super().closeEvent(event)
 
 
