@@ -22,7 +22,10 @@
 #define COMM_PROTOCOL_STATUS_FLAG_PENDING    0x0002U
 #define COMM_PROTOCOL_STATUS_FLAG_HOST       0x0004U
 #define COMM_PROTOCOL_STATUS_FLAG_TXN        0x0008U
-#define COMM_PROTOCOL_ROLE_UNKNOWN           0xFFU
+
+#if (APP_ROLE_ID < 1U) || (APP_ROLE_ID > 20U)
+#error "APP_ROLE_ID must be in the 1..20 physical board ID range"
+#endif
 
 typedef enum
 {
@@ -665,7 +668,7 @@ static void CommProtocol_SendHelloResponse(uint16_t seq)
 
   /* HELLO tells the host board identity, geometry, and protocol limits. */
   CommProtocol_WriteU32(&payload[0], comm_protocol_uid_hash);
-  payload[4] = COMM_PROTOCOL_ROLE_UNKNOWN;
+  payload[4] = (uint8_t)APP_ROLE_ID;
   payload[5] = WS2812_BSR_LANES;
   CommProtocol_WriteU16(&payload[6], COMM_PROTOCOL_LOGICAL_LEDS_PER_LANE);
   CommProtocol_WriteU16(&payload[8], COMM_PROTOCOL_CHUNK_RGB_BYTES);

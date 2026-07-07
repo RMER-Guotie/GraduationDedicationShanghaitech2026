@@ -1,12 +1,32 @@
 {
-  "devices": {
-    "0x12345678": {
-      "role": 0,
-      "name": "board_0"
+  "devices": [
+    {
+      "role_id": 7,
+      "slot": 1,
+      "uid_hash": "0x00000000",
+      "name": "board_7",
+      "enabled": true
     },
-    "0x9abcdef0": {
-      "role": 1,
-      "name": "board_1"
+    {
+      "role_id": 11,
+      "slot": 2,
+      "uid_hash": "0x00000000",
+      "name": "board_11",
+      "enabled": true
+    },
+    {
+      "role_id": 13,
+      "slot": 3,
+      "uid_hash": "0x00000000",
+      "name": "board_13",
+      "enabled": true
+    },
+    {
+      "role_id": 18,
+      "slot": 4,
+      "uid_hash": "0x00000000",
+      "name": "board_18",
+      "enabled": true
     }
-  }
+  ]
 }

@@ -28,6 +28,50 @@ rate, but this value works reliably with the current Windows CDC driver.
 Full-frame writes use no default chunk delay after the 2-chunk protocol and
 1024-byte downstream RX ring were validated at about 60 fps.
 
+## Multi-Board File Playback
+
+Each controller reports a board role in `HELLO_RSP`. Set `APP_ROLE_ID` in
+`Core/Inc/app_config.h` before flashing a board. Valid roles are physical PCB
+numbers `1..20`. The playback config maps those physical numbers to file slots
+`1..4`.
+
+Create a local test file:
+
+```powershell
+python -m tools.generate_test_file --output test.pixelbin --pattern breath --frames 240 --fps 60
+```
+
+Scan connected boards:
+
+```powershell
+python -m tools.scan_devices
+```
+
+Play the file to all boards that answer HELLO:
+
+```powershell
+python -m tools.play_file --file test.pixelbin --config config/devices.json
+```
+
+The `.pixelbin` format stores frames in board-major order. Each frame contains
+global `WW/CW` levels followed by four board slices. Each board slice is one
+logical `8 * 48 * 3 = 1152` byte RGB frame. During playback each connected board
+has its own sending thread. A device error skips that board's current frame and
+does not stop other boards.
+
+Example config for four physical boards selected from PCB IDs `1..20`:
+
+```json
+{
+  "devices": [
+    { "role_id": 7, "slot": 1, "name": "board_7", "enabled": true },
+    { "role_id": 11, "slot": 2, "name": "board_11", "enabled": true },
+    { "role_id": 13, "slot": 3, "name": "board_13", "enabled": true },
+    { "role_id": 18, "slot": 4, "name": "board_18", "enabled": true }
+  ]
+}
+```
+
 ## GUI Usage
 
 Run the debug GUI from the `host_tool` directory:
@@ -67,5 +111,6 @@ contains lanes 0..3, and chunk 1 contains lanes 4..7.
 
 ## Device Identity
 
-The firmware currently reports `uid_hash` in `HELLO_RSP`. The future GUI will map
-`uid_hash -> role` using `config/devices.example.json` as the starting format.
+The firmware reports both `uid_hash` and `role_id` in `HELLO_RSP`. Role ID is
+normally fixed by the board firmware macro. The host playback config maps that
+physical role ID to a logical playback slot.

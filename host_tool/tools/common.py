@@ -28,7 +28,7 @@ def close_device(device: PixelDevice) -> None:
 
 
 def print_hello(hello: proto.HelloResponse) -> None:
-    print(f"uid_hash={proto.format_uid(hello.uid_hash)} role_id=0x{hello.role_id:02x}")
+    print(f"uid_hash={proto.format_uid(hello.uid_hash)} role_id={hello.role_id} (0x{hello.role_id:02x})")
     print(f"lanes={hello.lanes} leds_per_lane={hello.leds_per_lane} chunks={hello.chunk_count}")
     print(f"protocol={hello.protocol_version} max_payload={hello.max_payload} white_max={hello.white_max_level}")
     print(f"long_timeout_ms={hello.long_timeout_ms}")
