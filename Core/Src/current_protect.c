@@ -1,19 +1,22 @@
 #include "current_protect.h"
 
 #include "main.h"
-#include "adc.h"
 #include "app_config.h"
 #include "white_pwm.h"
 
-extern ADC_HandleTypeDef hadc1;
-
-/* Periodic ADC current monitor with reset-latched fault output. */
 #if (APP_ENABLE_CURRENT_MONITOR != 0U) || (APP_ENABLE_CURRENT_PROTECT != 0U)
 #define CURRENT_PROTECT_ADC_ENABLED  1U
 #else
 #define CURRENT_PROTECT_ADC_ENABLED  0U
 #endif
 
+#if (CURRENT_PROTECT_ADC_ENABLED != 0U)
+#include "adc.h"
+
+extern ADC_HandleTypeDef hadc1;
+#endif
+
+/* Periodic current monitor with reset-latched fault output. */
 /* Debug watch values expose the latest protection state. */
 volatile uint16_t current_protect_watch_adc_raw;
 volatile uint32_t current_protect_watch_current_ma;

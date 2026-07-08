@@ -82,13 +82,17 @@ class MainWindow(QMainWindow):
 
         self.input_edit = QLineEdit()
         self.output_edit = QLineEdit()
+        self.preview_edit = QLineEdit()
         self.input_edit.setPlaceholderText("Select source video")
         self.output_edit.setPlaceholderText("Select output .pixelbin")
+        self.preview_edit.setPlaceholderText("Optional preview .mp4")
 
         input_button = QPushButton("Browse")
         output_button = QPushButton("Browse")
+        preview_button = QPushButton("Browse")
         input_button.clicked.connect(self._select_input)
         output_button.clicked.connect(self._select_output)
+        preview_button.clicked.connect(self._select_preview)
 
         layout.addWidget(QLabel("Input video"), 0, 0)
         layout.addWidget(self.input_edit, 0, 1)
@@ -96,6 +100,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Output file"), 1, 0)
         layout.addWidget(self.output_edit, 1, 1)
         layout.addWidget(output_button, 1, 2)
+        layout.addWidget(QLabel("Preview MP4"), 2, 0)
+        layout.addWidget(self.preview_edit, 2, 1)
+        layout.addWidget(preview_button, 2, 2)
         layout.setColumnStretch(1, 1)
         return group
 
@@ -187,7 +194,7 @@ class MainWindow(QMainWindow):
             self,
             "Select source video",
             "",
-            "Video Files (*.mp4 *.avi *.mov *.mkv *.wmv);;All Files (*)",
+            "Video/GIF Files (*.mp4 *.avi *.mov *.mkv *.wmv *.gif);;All Files (*)",
         )
         if not path:
             return
@@ -195,6 +202,9 @@ class MainWindow(QMainWindow):
         if not self.output_edit.text().strip():
             base, _ext = os.path.splitext(path)
             self.output_edit.setText(base + ".pixelbin")
+        if not self.preview_edit.text().strip():
+            base, _ext = os.path.splitext(path)
+            self.preview_edit.setText(base + "_preview.mp4")
 
     def _select_output(self) -> None:
         path, _selected = QFileDialog.getSaveFileName(
@@ -209,6 +219,19 @@ class MainWindow(QMainWindow):
             path += ".pixelbin"
         self.output_edit.setText(path)
 
+    def _select_preview(self) -> None:
+        path, _selected = QFileDialog.getSaveFileName(
+            self,
+            "Save preview mp4",
+            "",
+            "MP4 Files (*.mp4);;All Files (*)",
+        )
+        if not path:
+            return
+        if not os.path.splitext(path)[1]:
+            path += ".mp4"
+        self.preview_edit.setText(path)
+
     def _generate(self) -> None:
         if self.worker is not None and self.worker.is_alive():
             self._log("Generation is already running")
@@ -217,6 +240,7 @@ class MainWindow(QMainWindow):
         options = VideoGenerateOptions(
             input_path=self.input_edit.text().strip(),
             output_path=self.output_edit.text().strip(),
+            preview_mp4_path=self.preview_edit.text().strip(),
             fps=self.fps_spin.value(),
             start_s=self.start_spin.value(),
             end_s=self.end_spin.value(),
@@ -232,6 +256,8 @@ class MainWindow(QMainWindow):
         self.generate_button.setEnabled(False)
         self._log(f"GENERATE input={options.input_path}")
         self._log(f"GENERATE output={options.output_path}")
+        if options.preview_mp4_path:
+            self._log(f"GENERATE preview={options.preview_mp4_path}")
         self.worker = GenerateWorker(options, self.messages)
         self.worker.start()
 
@@ -263,6 +289,8 @@ class MainWindow(QMainWindow):
                     f"frames={result.frames_written} fps={result.fps} "  # type: ignore[attr-defined]
                     f"duration={result.duration_s:.2f}s output={result.output_path}"  # type: ignore[attr-defined]
                 )
+                if result.preview_mp4_path:  # type: ignore[attr-defined]
+                    self._log(f"PREVIEW output={result.preview_mp4_path}")  # type: ignore[attr-defined]
                 self.generate_button.setEnabled(True)
                 self.worker = None
             elif kind == "error":

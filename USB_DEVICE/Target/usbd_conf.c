@@ -120,13 +120,7 @@ void HAL_PCD_MspDeInit(PCD_HandleTypeDef* pcdHandle)
     __HAL_RCC_USB_CLK_DISABLE();
 
     /* Peripheral interrupt Deinit*/
-  /* USER CODE BEGIN USB:USB_LP_CAN1_RX0_IRQn disable */
-    /**
-    * Uncomment the line below to disable the "USB_LP_CAN1_RX0_IRQn" interrupt
-    * Be aware, disabling shared interrupt may affect other IPs
-    */
-    /* HAL_NVIC_DisableIRQ(USB_LP_CAN1_RX0_IRQn); */
-  /* USER CODE END USB:USB_LP_CAN1_RX0_IRQn disable */
+    HAL_NVIC_DisableIRQ(USB_LP_CAN1_RX0_IRQn);
 
   /* USER CODE BEGIN USB_MspDeInit 1 */
 
@@ -145,23 +139,6 @@ static void PCD_SetupStageCallback(PCD_HandleTypeDef *hpcd)
 void HAL_PCD_SetupStageCallback(PCD_HandleTypeDef *hpcd)
 #endif /* USE_HAL_PCD_REGISTER_CALLBACKS */
 {
-  /* USER CODE BEGIN HAL_PCD_SetupStageCallback_Pre */
-  const uint8_t *setup = (const uint8_t *)hpcd->Setup;
-
-  usb_dbg_setup_count++;
-  usb_dbg_setup_istr = USB->ISTR;
-  usb_dbg_setup_ep0r = USB->EP0R;
-  usb_dbg_setup_daddr = USB->DADDR;
-  usb_dbg_setup_cntr = USB->CNTR;
-  usb_dbg_setup_word0 = ((uint32_t)setup[0]) |
-                        ((uint32_t)setup[1] << 8U) |
-                        ((uint32_t)setup[2] << 16U) |
-                        ((uint32_t)setup[3] << 24U);
-  usb_dbg_setup_word1 = ((uint32_t)setup[4]) |
-                        ((uint32_t)setup[5] << 8U) |
-                        ((uint32_t)setup[6] << 16U) |
-                        ((uint32_t)setup[7] << 24U);
-  /* USER CODE END HAL_PCD_SetupStageCallback_Pre */
   USBD_LL_SetupStage((USBD_HandleTypeDef*)hpcd->pData, (uint8_t *)hpcd->Setup);
 }
 
@@ -221,14 +198,6 @@ void HAL_PCD_ResetCallback(PCD_HandleTypeDef *hpcd)
 #endif /* USE_HAL_PCD_REGISTER_CALLBACKS */
 {
   USBD_SpeedTypeDef speed = USBD_SPEED_FULL;
-
-  /* USER CODE BEGIN HAL_PCD_ResetCallback_Pre */
-  usb_dbg_reset_count++;
-  usb_dbg_reset_istr = USB->ISTR;
-  usb_dbg_reset_ep0r = USB->EP0R;
-  usb_dbg_reset_daddr = USB->DADDR;
-  usb_dbg_reset_cntr = USB->CNTR;
-  /* USER CODE END HAL_PCD_ResetCallback_Pre */
 
   if ( hpcd->Init.speed != PCD_SPEED_FULL)
   {
@@ -459,18 +428,7 @@ USBD_StatusTypeDef USBD_LL_OpenEP(USBD_HandleTypeDef *pdev, uint8_t ep_addr, uin
   HAL_StatusTypeDef hal_status = HAL_OK;
   USBD_StatusTypeDef usb_status = USBD_OK;
 
-  /* USER CODE BEGIN USBD_LL_OpenEP_Pre */
-  usb_dbg_open_ep_count++;
-  usb_dbg_open_ep_addr = ep_addr;
-  usb_dbg_open_ep_type = ep_type;
-  usb_dbg_open_ep_mps = ep_mps;
-  /* USER CODE END USBD_LL_OpenEP_Pre */
-
   hal_status = HAL_PCD_EP_Open(pdev->pData, ep_addr, ep_mps, ep_type);
-
-  /* USER CODE BEGIN USBD_LL_OpenEP_Post */
-  usb_dbg_open_ep0r_after = USB->EP0R;
-  /* USER CODE END USBD_LL_OpenEP_Post */
 
   usb_status =  USBD_Get_USB_Status(hal_status);
 

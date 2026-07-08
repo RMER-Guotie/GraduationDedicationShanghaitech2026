@@ -57,7 +57,6 @@
 
 /* External variables --------------------------------------------------------*/
 extern PCD_HandleTypeDef hpcd_USB_FS;
-extern CAN_HandleTypeDef hcan;
 /* USER CODE BEGIN EV */
 extern volatile uint32_t usb_dbg_irq_count;
 extern volatile uint32_t usb_dbg_irq_before_istr;
@@ -249,12 +248,6 @@ void USB_LP_CAN1_RX0_IRQHandler(void)
 
   /* USER CODE END USB_LP_CAN1_RX0_IRQn 0 */
   HAL_PCD_IRQHandler(&hpcd_USB_FS);
-#if APP_ENABLE_CAN
-  if (hcan.Instance != 0)
-  {
-    HAL_CAN_IRQHandler(&hcan);
-  }
-#endif
   /* USER CODE BEGIN USB_LP_CAN1_RX0_IRQn 1 */
   usb_dbg_irq_after_istr = USB->ISTR;
   usb_dbg_irq_after_ep0r = USB->EP0R;

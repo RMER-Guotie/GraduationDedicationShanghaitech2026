@@ -34,7 +34,7 @@
 /* Host communication protocol and transport settings. */
 #define APP_COMM_PROTOCOL_VERSION         1U
 /* Physical PCB number reported in HELLO; valid IDs are 1..20. */
-#define APP_ROLE_ID                       1U
+#define APP_ROLE_ID                       10U
 #define APP_COMM_UART_BAUD                921600U
 #define APP_COMM_UART_TX_TIMEOUT_MS       2U
 #define APP_COMM_LONG_TIMEOUT_MS          10000U

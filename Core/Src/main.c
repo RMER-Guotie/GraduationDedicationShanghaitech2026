@@ -18,9 +18,6 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "adc.h"
-#include "can.h"
-#include "spi.h"
 #include "tim.h"
 #include "usart.h"
 #include "usb_device.h"
@@ -93,20 +90,11 @@ int main(void)
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
-#if APP_USB_ONLY_BRINGUP
-  MX_USB_DEVICE_Init();
-#else
   MX_GPIO_Init();
   MX_TIM1_Init();
   MX_TIM4_Init();
   MX_USART1_UART_Init();
   MX_USB_DEVICE_Init();
-  MX_ADC1_Init();
-#if APP_ENABLE_CAN
-  MX_CAN_Init();
-#endif
-  MX_SPI2_Init();
-#endif
   /* USER CODE BEGIN 2 */
 #if !APP_USB_ONLY_BRINGUP
   /* Initialize application drivers after CubeMX peripheral setup. */
@@ -170,8 +158,7 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_ADC|RCC_PERIPHCLK_USB;
-  PeriphClkInit.AdcClockSelection = RCC_ADCPCLK2_DIV6;
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USB;
   PeriphClkInit.UsbClockSelection = RCC_USBCLKSOURCE_PLL_DIV1_5;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {

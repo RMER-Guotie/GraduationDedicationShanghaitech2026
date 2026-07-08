@@ -67,6 +67,14 @@ void Error_Handler(void);
 #define CH3_GPIO_Port GPIOA
 #define CH4_Pin GPIO_PIN_3
 #define CH4_GPIO_Port GPIOA
+#define CH5_Pin GPIO_PIN_4
+#define CH5_GPIO_Port GPIOA
+#define CH6_Pin GPIO_PIN_5
+#define CH6_GPIO_Port GPIOA
+#define CH7_Pin GPIO_PIN_6
+#define CH7_GPIO_Port GPIOA
+#define CH8_Pin GPIO_PIN_7
+#define CH8_GPIO_Port GPIOA
 #define RC_D3_Pin GPIO_PIN_1
 #define RC_D3_GPIO_Port GPIOB
 #define RC_D3_EXTI_IRQn EXTI1_IRQn
@@ -79,8 +87,6 @@ void Error_Handler(void);
 #define RC_D0_Pin GPIO_PIN_11
 #define RC_D0_GPIO_Port GPIOB
 #define RC_D0_EXTI_IRQn EXTI15_10_IRQn
-#define SPI2_CS0_Pin GPIO_PIN_12
-#define SPI2_CS0_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

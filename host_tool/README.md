@@ -106,12 +106,17 @@ GUI playback mode.
 Generator behavior:
 
 - Uses OpenCV to read common video files such as `mp4`, `avi`, `mov`, `mkv`, and
-  `wmv`.
+  `wmv`; uses Pillow to read animated `gif` input.
 - Crops the source video from the center to the display aspect ratio `2:3`.
 - Resizes each sampled frame to the logical display size `32 x 48`.
 - Stores frames in the existing `.pixelbin` board-major format.
 - Supports output FPS, start/end time, brightness, gamma, saturation, and fixed
   global `WW/CW` levels.
+- Can also write an optional preview MP4. The preview is generated from the same
+  processed `32 x 48` logical frames as the `.pixelbin`, then enlarged to
+  `320 x 480` with nearest-neighbor scaling for visual checking.
+- GIF input is converted once through its own timeline; it is not looped
+  automatically during file generation.
 
 Logical mapping for generated files:
 

@@ -932,10 +932,12 @@ Dependencies:
 - `pyserial` for communication tools.
 - `PySide6` for the existing debug GUI and the offline generator GUI.
 - `opencv-python` for video decoding and image processing.
+- `Pillow` for animated GIF input.
 
 Generator behavior:
 
 - Reads local video with OpenCV.
+- Reads animated GIF input with Pillow.
 - Samples frames at the selected output FPS, default `60`.
 - Uses a center crop to match the logical display aspect ratio `2:3`.
 - Resizes the cropped frame to `32 x 48`.
@@ -944,6 +946,12 @@ Generator behavior:
   - gamma,
   - saturation multiplier.
 - Writes the existing `.pixelbin` format with global fixed `WW/CW` levels.
+- Can also write an optional preview MP4. The preview MP4 is generated from the
+  same processed `32 x 48` logical RGB frames as the `.pixelbin`, then enlarged
+  to `320 x 480` using nearest-neighbor scaling so the pixel layout remains
+  visible.
+- GIF input is converted once through the GIF's own timeline. It is not looped
+  automatically during file generation.
 
 Current logical mapping for generated files:
 

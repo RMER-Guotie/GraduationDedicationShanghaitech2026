@@ -1,0 +1,38 @@
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Generated media / playback files
+*.pixelbin
+*_preview.mp4
+
+# Keil / MDK generated outputs
+MDK-ARM/PIXEL_LIGHT/
+MDK-ARM/*.lst
+*.uvguix.*
+*.uvgui.*
+
+# IDE / editor
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
