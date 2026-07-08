@@ -11,6 +11,14 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+For a new Windows PC, the same setup can be done with:
+
+```powershell
+cd host_tool
+powershell -ExecutionPolicy Bypass -File .\setup_host_env.ps1
+.\.venv\Scripts\activate
+```
+
 ## CLI Usage
 
 Run commands from the `host_tool` directory:
@@ -82,6 +90,41 @@ python -m tools.gui
 
 The first GUI version supports port scanning, connect/disconnect, HELLO, STATUS,
 ALL_BLACK, solid RGB output, and an 8-lane color test frame.
+
+## Offline Video Generator
+
+Run the offline generator GUI from the `host_tool` directory:
+
+```powershell
+python -m tools.generator_gui
+```
+
+The generator is not part of live playback. It is used occasionally to convert a
+local video into a `.pixelbin` file, which can later be imported by the debug
+GUI playback mode.
+
+Generator behavior:
+
+- Uses OpenCV to read common video files such as `mp4`, `avi`, `mov`, `mkv`, and
+  `wmv`.
+- Crops the source video from the center to the display aspect ratio `2:3`.
+- Resizes each sampled frame to the logical display size `32 x 48`.
+- Stores frames in the existing `.pixelbin` board-major format.
+- Supports output FPS, start/end time, brightness, gamma, saturation, and fixed
+  global `WW/CW` levels.
+
+Logical mapping for generated files:
+
+```text
+x = 0..31, left to right
+y = 0..47, top to bottom
+board slot = x / 8 + 1
+lane       = x % 8
+pixel      = y
+```
+
+Each lane is straight mapped from top to bottom. The current generator does not
+implement serpentine, reversed wiring, or per-board geometric correction.
 
 ## Protocol Summary
 

@@ -892,10 +892,78 @@ Current limitations:
 
 - No persistent multi-board role mapping beyond the example JSON file.
 - Current live GUI stream is closed-loop and waits for a commit response per
-  frame; the 2-chunk protocol has been validated at about 60 fps.
-- No automatic dependency installation has been run.
+  frame; the current 4-chunk protocol is the validated USB Hub multi-board
+  setting.
+- `host_tool/setup_host_env.ps1` exists for dependency installation on a new PC,
+  but Codex has not run it locally unless the user explicitly authorizes that.
 - GUI operations are currently synchronous and intended for bench debug, not
   high-rate streaming.
+
+## Host Offline Video Generator
+
+The host tool now includes a separate offline generator for occasionally
+preparing `.pixelbin` playback files from local video. It is intentionally not
+integrated into live playback or device communication.
+
+Entry point:
+
+```powershell
+cd host_tool
+python -m tools.generator_gui
+```
+
+Deployment helper for a new Windows PC:
+
+```powershell
+cd host_tool
+powershell -ExecutionPolicy Bypass -File .\setup_host_env.ps1
+.\.venv\Scripts\activate
+```
+
+Files:
+
+- `host_tool/pixel_host/video_generator.py`: OpenCV-based video conversion core.
+- `host_tool/pixel_host/generator_gui.py`: standalone PySide6 generator GUI.
+- `host_tool/tools/generator_gui.py`: launcher.
+- `host_tool/setup_host_env.ps1`: creates `.venv` and installs dependencies.
+
+Dependencies:
+
+- `pyserial` for communication tools.
+- `PySide6` for the existing debug GUI and the offline generator GUI.
+- `opencv-python` for video decoding and image processing.
+
+Generator behavior:
+
+- Reads local video with OpenCV.
+- Samples frames at the selected output FPS, default `60`.
+- Uses a center crop to match the logical display aspect ratio `2:3`.
+- Resizes the cropped frame to `32 x 48`.
+- Optional simple image adjustment:
+  - brightness multiplier,
+  - gamma,
+  - saturation multiplier.
+- Writes the existing `.pixelbin` format with global fixed `WW/CW` levels.
+
+Current logical mapping for generated files:
+
+```text
+x = 0..31, left to right
+y = 0..47, top to bottom
+slot_id = x / 8 + 1
+lane    = x % 8
+pixel   = y
+```
+
+Each lane is straight mapped from top to bottom:
+
+```text
+left slot/lane top pixel -> same lane bottom pixel
+```
+
+There is currently no serpentine mapping, reverse-lane feature, per-board
+rotation, or geometric correction. Add those only after the user explicitly
+defines the needed wiring variants.
 
 ## Main Integration
 
