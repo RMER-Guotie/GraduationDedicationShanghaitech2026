@@ -957,21 +957,24 @@ Current logical mapping for generated files:
 
 ```text
 x = 0..31, left to right
-y = 0..47, top to bottom
+y = 0..47, top to bottom in the source/video
 slot_id = x / 8 + 1
 lane    = x % 8
-pixel   = y
+pixel   = 47 - y
 ```
 
-Each lane is straight mapped from top to bottom:
+Each lane is physically wired from bottom to top:
 
 ```text
-left slot/lane top pixel -> same lane bottom pixel
+left slot/lane bottom pixel -> same lane top pixel
 ```
 
-There is currently no serpentine mapping, reverse-lane feature, per-board
-rotation, or geometric correction. Add those only after the user explicitly
-defines the needed wiring variants.
+The source/video coordinate system still uses normal top-to-bottom rows. The
+host flips `y` inside each lane before writing board-major frame data, so this
+does not change the firmware protocol or the lane-major frame format. There is
+currently no serpentine mapping, reverse-lane feature, per-board rotation, or
+geometric correction. Add those only after the user explicitly defines the
+needed wiring variants.
 
 ## Main Integration
 

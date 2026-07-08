@@ -122,14 +122,16 @@ Logical mapping for generated files:
 
 ```text
 x = 0..31, left to right
-y = 0..47, top to bottom
+y = 0..47, top to bottom in the source/video
 board slot = x / 8 + 1
 lane       = x % 8
-pixel      = y
+pixel      = 47 - y
 ```
 
-Each lane is straight mapped from top to bottom. The current generator does not
-implement serpentine, reversed wiring, or per-board geometric correction.
+Each lane is physically wired from bottom to top. The logical source/video still
+uses normal top-to-bottom rows, so the host flips `y` inside each lane before
+writing board-major frame data. The current generator does not implement
+serpentine wiring, per-board rotation, or geometric correction.
 
 ## Protocol Summary
 

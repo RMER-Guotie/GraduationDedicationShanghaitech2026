@@ -27,7 +27,8 @@ def split_screen_to_boards(screen_rgb: bytes, board_count: int = DEFAULT_BOARD_C
             board_index = x // proto.LANES
             lane = x % proto.LANES
             src_offset = row_offset + x * 3
-            dst_offset = (lane * proto.LEDS_PER_LANE + y) * 3
+            physical_pixel = proto.LEDS_PER_LANE - 1 - y
+            dst_offset = (lane * proto.LEDS_PER_LANE + physical_pixel) * 3
             board_frames[board_index][dst_offset : dst_offset + 3] = screen_rgb[src_offset : src_offset + 3]
 
     return tuple(bytes(frame) for frame in board_frames)
