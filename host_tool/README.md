@@ -102,12 +102,13 @@ It is sent as:
 
 ```text
 FRAME_BEGIN
-2 * FRAME_RGB_CHUNK
+4 * FRAME_RGB_CHUNK
 FRAME_COMMIT
 ```
 
-Each chunk contains four complete logical lanes, or 576 RGB bytes. Chunk 0
-contains lanes 0..3, and chunk 1 contains lanes 4..7.
+Each chunk contains two complete logical lanes, or 288 RGB bytes. Chunk 0
+contains lanes 0..1, chunk 1 contains lanes 2..3, chunk 2 contains lanes
+4..5, and chunk 3 contains lanes 6..7.
 
 ## Device Identity
 

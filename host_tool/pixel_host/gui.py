@@ -39,7 +39,7 @@ MAX_ACTIVE_BOARDS = 4
 TOTAL_CHANNELS = MAX_ACTIVE_BOARDS * proto.LANES
 DEFAULT_BAUD = 115200
 DEFAULT_RESPONSE_TIMEOUT_S = 1.0
-DEFAULT_CHUNK_DELAY_S = 0.0
+DEFAULT_CHUNK_DELAY_MS = 0.25
 FRAME_RGB_BYTES = proto.LANES * proto.LEDS_PER_LANE * 3
 
 
@@ -67,6 +67,7 @@ class PlaybackControl:
         self.stop_event = threading.Event()
         self.pause_event = threading.Event()
         self._speed = 1.0
+        self._chunk_delay_s = DEFAULT_CHUNK_DELAY_MS / 1000.0
         self._lock = threading.Lock()
 
     def set_speed(self, value: float) -> None:
@@ -77,13 +78,22 @@ class PlaybackControl:
         with self._lock:
             return self._speed
 
+    def set_chunk_delay_ms(self, value: float) -> None:
+        with self._lock:
+            self._chunk_delay_s = max(0.0, value) / 1000.0
+
+    def get_chunk_delay_s(self) -> float:
+        with self._lock:
+            return self._chunk_delay_s
+
 
 class SlotSender(threading.Thread):
     """Persistent sender for one board so playback can pace all slots independently."""
 
-    def __init__(self, session: BoardSession, log_queue: queue.Queue[str]) -> None:
+    def __init__(self, session: BoardSession, control: PlaybackControl, log_queue: queue.Queue[str]) -> None:
         super().__init__(daemon=True)
         self.session = session
+        self.control = control
         self.log_queue = log_queue
         self.stop_event = threading.Event()
         self.items: queue.Queue[tuple[int, bytes, int, int] | None] = queue.Queue(maxsize=1)
@@ -122,7 +132,7 @@ class SlotSender(threading.Thread):
                     frame_rgb,
                     ww=ww,
                     cw=cw,
-                    chunk_delay_s=DEFAULT_CHUNK_DELAY_S,
+                    chunk_delay_s=self.control.get_chunk_delay_s(),
                 )
                 if commit.status == proto.OK:
                     self.session.ok_frames += 1
@@ -167,7 +177,8 @@ class PlaybackWorker(threading.Thread):
                 self._start_senders()
                 self._log_missing_slots(reader.header.board_count)
                 self.log_queue.put(
-                    f"PLAY started file={self.path} fps={reader.header.fps} frames={reader.header.frame_count}"
+                    f"PLAY started file={self.path} fps={reader.header.fps} frames={reader.header.frame_count} "
+                    f"chunk_delay={self.control.get_chunk_delay_s() * 1000.0:.2f}ms"
                 )
                 frame_count = 0
                 next_deadline = time.perf_counter()
@@ -208,7 +219,7 @@ class PlaybackWorker(threading.Thread):
 
     def _start_senders(self) -> None:
         for slot_id, session in self.sessions.items():
-            sender = SlotSender(session, self.log_queue)
+            sender = SlotSender(session, self.control, self.log_queue)
             self.senders[slot_id] = sender
             sender.start()
 
@@ -300,6 +311,10 @@ class MainWindow(QMainWindow):
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.connect_result_queue: queue.Queue[dict[int, BoardSession]] = queue.Queue()
         self.slot_frames = {slot_id: bytearray(FRAME_RGB_BYTES) for slot_id in range(1, MAX_ACTIVE_BOARDS + 1)}
+        self.repeat_send_active = False
+        self.repeat_send_busy = False
+        self.repeat_send_count = 0
+        self.repeat_send_skip_count = 0
 
         self.log_timer = QTimer(self)
         self.log_timer.timeout.connect(self._drain_log_queue)
@@ -308,6 +323,9 @@ class MainWindow(QMainWindow):
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self.update_slot_status)
         self.status_timer.start(500)
+
+        self.repeat_send_timer = QTimer(self)
+        self.repeat_send_timer.timeout.connect(self._repeat_channel_test_tick)
 
         root = QWidget(self)
         self.setCentralWidget(root)
@@ -381,6 +399,12 @@ class MainWindow(QMainWindow):
         self.channel_spin = QSpinBox()
         self.channel_spin.setRange(1, TOTAL_CHANNELS)
         self.channel_spin.setValue(1)
+        self.repeat_hz_spin = QDoubleSpinBox()
+        self.repeat_hz_spin.setRange(1.0, 120.0)
+        self.repeat_hz_spin.setDecimals(1)
+        self.repeat_hz_spin.setSingleStep(1.0)
+        self.repeat_hz_spin.setValue(30.0)
+        self.repeat_hz_spin.setSuffix(" Hz")
 
         form = QFormLayout()
         form.addRow("R", self.r_spin)
@@ -389,8 +413,10 @@ class MainWindow(QMainWindow):
         form.addRow("WW", self.ww_spin)
         form.addRow("CW", self.cw_spin)
         form.addRow("Channel", self.channel_spin)
+        form.addRow("Repeat", self.repeat_hz_spin)
 
         self.channel_test_button = QPushButton("Send Channel Test")
+        self.repeat_test_button = QPushButton("Start Repeat")
         self.import_file_button = QPushButton("Import And Play")
         self.pause_button = QPushButton("Pause")
         self.stop_playback_button = QPushButton("Stop")
@@ -400,14 +426,22 @@ class MainWindow(QMainWindow):
         self.speed_spin.setSingleStep(0.25)
         self.speed_spin.setValue(1.0)
         self.speed_spin.setSuffix("x")
+        self.chunk_delay_spin = QDoubleSpinBox()
+        self.chunk_delay_spin.setRange(0.0, 5.0)
+        self.chunk_delay_spin.setDecimals(2)
+        self.chunk_delay_spin.setSingleStep(0.05)
+        self.chunk_delay_spin.setValue(DEFAULT_CHUNK_DELAY_MS)
+        self.chunk_delay_spin.setSuffix(" ms")
         self.file_label = QLabel("No file")
         self.file_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         self.channel_test_button.clicked.connect(lambda: self.send_channel_test())
+        self.repeat_test_button.clicked.connect(lambda: self.toggle_repeat_channel_test())
         self.import_file_button.clicked.connect(lambda: self.import_and_play())
         self.pause_button.clicked.connect(lambda: self.toggle_pause())
         self.stop_playback_button.clicked.connect(lambda: self.stop_playback())
         self.speed_spin.valueChanged.connect(self.playback_control.set_speed)
+        self.chunk_delay_spin.valueChanged.connect(self.playback_control.set_chunk_delay_ms)
 
         playback_row = QHBoxLayout()
         playback_row.addWidget(self.import_file_button)
@@ -415,10 +449,13 @@ class MainWindow(QMainWindow):
         playback_row.addWidget(self.stop_playback_button)
         playback_row.addWidget(QLabel("Speed"))
         playback_row.addWidget(self.speed_spin)
+        playback_row.addWidget(QLabel("Chunk delay"))
+        playback_row.addWidget(self.chunk_delay_spin)
         playback_row.addWidget(self.file_label, 1)
 
         layout.addLayout(form, 0, 0)
         layout.addWidget(self.channel_test_button, 1, 0)
+        layout.addWidget(self.repeat_test_button, 2, 0)
         layout.addLayout(playback_row, 0, 1, 2, 1)
         layout.setColumnStretch(1, 1)
         return group
@@ -463,6 +500,7 @@ class MainWindow(QMainWindow):
 
     def disconnect_all(self, log_disconnect: bool = True) -> None:
         self.stop_playback()
+        self.stop_repeat_channel_test()
         for session in self.sessions.values():
             session.link.close()
         if log_disconnect and self.sessions:
@@ -476,49 +514,117 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Playback active", "Pause or stop file playback before channel testing.")
             return
 
+        if self.repeat_send_busy:
+            self.log("Channel test skipped because a send is still active")
+            return
+
+        self.repeat_send_busy = True
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        self.channel_test_button.setEnabled(False)
+        self.repeat_test_button.setEnabled(False)
+        try:
+            self._send_channel_test_once(log_each_slot=True)
+        finally:
+            self.repeat_send_busy = False
+            QApplication.restoreOverrideCursor()
+            self.channel_test_button.setEnabled(not self.repeat_send_active)
+            self.repeat_test_button.setEnabled(True)
+            self.update_slot_status()
+
+    def toggle_repeat_channel_test(self) -> None:
+        if self.repeat_send_active:
+            self.stop_repeat_channel_test()
+            return
+
+        if self.is_playback_active():
+            self.log("Repeat channel test blocked while file playback is active")
+            QMessageBox.warning(self, "Playback active", "Stop file playback before repeat channel testing.")
+            return
+
+        if not self.sessions:
+            self.log("No connected boards; repeat test not started")
+            return
+
+        self.repeat_send_active = True
+        self.repeat_send_count = 0
+        self.repeat_send_skip_count = 0
+        self.repeat_test_button.setText("Stop Repeat")
+        self.channel_test_button.setEnabled(False)
+        self.import_file_button.setEnabled(False)
+        interval_ms = max(1, int(round(1000.0 / self.repeat_hz_spin.value())))
+        self.repeat_send_timer.start(interval_ms)
+        self.log(f"REPEAT started hz={self.repeat_hz_spin.value():.1f} interval={interval_ms}ms")
+
+    def stop_repeat_channel_test(self) -> None:
+        if not self.repeat_send_active:
+            return
+
+        self.repeat_send_timer.stop()
+        self.repeat_send_active = False
+        self.repeat_send_busy = False
+        self.repeat_test_button.setText("Start Repeat")
+        self.channel_test_button.setEnabled(not self.is_playback_active())
+        self.import_file_button.setEnabled(not self.is_playback_active())
+        self.log(f"REPEAT stopped sent={self.repeat_send_count} skipped={self.repeat_send_skip_count}")
+
+    def _repeat_channel_test_tick(self) -> None:
+        if self.repeat_send_busy:
+            self.repeat_send_skip_count += 1
+            return
+
+        self.repeat_send_busy = True
+        try:
+            ok = self._send_channel_test_once(log_each_slot=False)
+            if ok:
+                self.repeat_send_count += 1
+                if self.repeat_send_count % max(1, int(self.repeat_hz_spin.value())) == 0:
+                    self.log(f"REPEAT sent={self.repeat_send_count} skipped={self.repeat_send_skip_count}")
+        finally:
+            self.repeat_send_busy = False
+            self.update_slot_status()
+
+    def _send_channel_test_once(self, log_each_slot: bool) -> bool:
         channel = self.channel_spin.value()
         slot_id = ((channel - 1) // proto.LANES) + 1
         lane = (channel - 1) % proto.LANES
         session = self.sessions.get(slot_id)
         if session is None:
             self.log(f"channel {channel} maps to missing slot {slot_id}")
-            return
+            return False
 
         self._set_lane_color(slot_id, lane)
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        self.channel_test_button.setEnabled(False)
-        try:
-            for current_slot_id, current_session in sorted(self.sessions.items()):
-                frame = bytes(self.slot_frames[current_slot_id])
-                try:
-                    commit = current_session.device.send_frame(
-                        frame,
-                        ww=self.ww_spin.value(),
-                        cw=self.cw_spin.value(),
-                        chunk_delay_s=DEFAULT_CHUNK_DELAY_S,
-                    )
-                    if commit.status == proto.OK:
-                        current_session.ok_frames += 1
-                        current_session.state = "connected"
-                        current_session.last_error = ""
-                    else:
-                        current_session.error_count += 1
-                        current_session.state = "error"
-                        current_session.last_error = f"commit status={commit.status}"
+        ok = True
+        for current_slot_id, current_session in sorted(self.sessions.items()):
+            frame = bytes(self.slot_frames[current_slot_id])
+            try:
+                commit = current_session.device.send_frame(
+                    frame,
+                    ww=self.ww_spin.value(),
+                    cw=self.cw_spin.value(),
+                    chunk_delay_s=self.chunk_delay_spin.value() / 1000.0,
+                )
+                if commit.status == proto.OK:
+                    current_session.ok_frames += 1
+                    current_session.state = "connected"
+                    current_session.last_error = ""
+                else:
+                    ok = False
+                    current_session.error_count += 1
+                    current_session.state = "error"
+                    current_session.last_error = f"commit status={commit.status}"
+                if log_each_slot:
                     self.log(
                         f"CHANNEL channel={channel} slot={current_slot_id} role={current_session.role_id} "
                         f"changed_lane={lane + 1 if current_slot_id == slot_id else 0} "
                         f"commit_status={commit.status} mask=0x{commit.received_mask:04x}"
                     )
-                except Exception as exc:  # noqa: BLE001
-                    current_session.error_count += 1
-                    current_session.state = "error"
-                    current_session.last_error = str(exc)
-                    self.log(f"CHANNEL channel={channel} slot={current_slot_id} failed: {exc}")
-        finally:
-            QApplication.restoreOverrideCursor()
-            self.channel_test_button.setEnabled(True)
-            self.update_slot_status()
+            except Exception as exc:  # noqa: BLE001
+                ok = False
+                current_session.error_count += 1
+                current_session.state = "error"
+                current_session.last_error = str(exc)
+                self.log(f"CHANNEL channel={channel} slot={current_slot_id} failed: {exc}")
+        return ok
 
     def _set_lane_color(self, slot_id: int, lane: int) -> None:
         frame = self.slot_frames[slot_id]
@@ -560,6 +666,10 @@ class MainWindow(QMainWindow):
     def start_playback(self) -> None:
         if self.playback_path is None:
             return
+        if self.repeat_send_active:
+            self.log("Playback blocked while repeat channel test is active")
+            QMessageBox.warning(self, "Repeat active", "Stop repeat channel testing before file playback.")
+            return
         if not self.sessions:
             self.log("No connected boards; playback not started")
             QMessageBox.warning(self, "No boards", "Auto connect at least one board before playback.")
@@ -569,6 +679,7 @@ class MainWindow(QMainWindow):
         self.playback_control.stop_event.clear()
         self.playback_control.pause_event.clear()
         self.playback_control.set_speed(self.speed_spin.value())
+        self.playback_control.set_chunk_delay_ms(self.chunk_delay_spin.value())
         self.playback_worker = PlaybackWorker(self.playback_path, self.sessions, self.playback_control, self.log_queue)
         self.playback_worker.start()
         self._set_playback_running(True)
@@ -596,7 +707,11 @@ class MainWindow(QMainWindow):
         return self.playback_worker is not None and self.playback_worker.is_alive()
 
     def _set_playback_running(self, running: bool) -> None:
-        self.channel_test_button.setEnabled(not running)
+        if running:
+            self.stop_repeat_channel_test()
+        self.channel_test_button.setEnabled((not running) and (not self.repeat_send_active))
+        self.repeat_test_button.setEnabled(not running)
+        self.import_file_button.setEnabled((not running) and (not self.repeat_send_active))
         self.pause_button.setEnabled(running)
         self.stop_playback_button.setEnabled(running)
         self.pause_button.setText("Pause")
@@ -656,6 +771,7 @@ class MainWindow(QMainWindow):
         self.log_text.append(message)
 
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        self.stop_repeat_channel_test()
         self.disconnect_all(log_disconnect=False)
         super().closeEvent(event)
 

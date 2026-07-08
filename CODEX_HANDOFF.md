@@ -442,17 +442,19 @@ WAIT_SYNC0 -> WAIT_SYNC1 -> READ_HEADER -> READ_PAYLOAD -> READ_CRC0 -> READ_CRC
   valid range `1..20`.
 - A statically allocated staging RGB frame stores one uncommitted `8 x 48 x RGB`
   logical frame, adding `1152 bytes` RAM.
-- One full frame currently uses 2 chunks. Each chunk carries 576 bytes =
-  four complete logical lanes.
+- One full frame currently uses 4 chunks. Each chunk carries 288 bytes =
+  two complete logical lanes.
 - Chunk mapping is lane-major:
-  - chunk 0 -> lanes 0..3 logical pixels 0..47,
-  - chunk 1 -> lanes 4..7 logical pixels 0..47.
+  - chunk 0 -> lanes 0..1 logical pixels 0..47,
+  - chunk 1 -> lanes 2..3 logical pixels 0..47,
+  - chunk 2 -> lanes 4..5 logical pixels 0..47,
+  - chunk 3 -> lanes 6..7 logical pixels 0..47.
 - On commit, firmware maps each logical pixel to two physical WS2812B pixels:
   physical indices `2n` and `2n + 1`.
 - `FRAME_BEGIN` records frame ID, chunk count, WW/CW metadata, and optional
   frame CRC32. The current first version stores but does not verify frame CRC32.
 - CRC-valid chunks write only into the staging frame and update `received_mask`.
-- `FRAME_COMMIT` succeeds only when frame ID matches, both chunks are received,
+- `FRAME_COMMIT` succeeds only when frame ID matches, all four chunks are received,
   no severe transaction error is active, and overcurrent fault is inactive.
 - Successful commit copies staging RGB into the WS2812 software frame, applies
   WW/CW target levels, and triggers WS2812 output. If WS2812 DMA is busy, it
@@ -714,10 +716,10 @@ Frame transaction rules:
   not verify frame CRC32.
 - WW/CW white levels are stored as frame metadata and take effect only after a
   successful `FRAME_COMMIT`.
-- Each RGB chunk is planned as 576 bytes, representing four complete logical lanes.
-- One full frame has 2 RGB chunks.
+- Each RGB chunk is planned as 288 bytes, representing two complete logical lanes.
+- One full frame has 4 RGB chunks.
 - CRC-valid chunks are written to the back/staging frame at their target offset.
-- A `received_mask` tracks the 2 chunks.
+- A `received_mask` tracks the 4 chunks.
 - `FRAME_COMMIT` is accepted only when frame ID matches, all chunks are received,
   and no severe transaction error is active.
 - `COMM_PROTOCOL.md` is the host-facing protocol handoff document.
@@ -756,8 +758,8 @@ Current scope:
   - sync `0x5A 0xA5`,
   - protocol version `1`,
   - CRC16-CCITT-FALSE,
-  - 2 RGB chunks per full frame,
-  - each RGB chunk carries 576 bytes / four complete logical lanes,
+  - 4 RGB chunks per full frame,
+  - each RGB chunk carries 288 bytes / two complete logical lanes,
   - lane-major `8 x 48` logical mapping.
 - Implemented CLI commands:
 
@@ -869,21 +871,20 @@ Closed-loop throughput validation on USB CDC virtual COM:
 1.00 ms and below: timeout or severe errors
 ```
 
-- Current protocol reduces the same `8 x 48` logical frame to 2 half-frame
-  chunks, with `chunk_rgb_bytes = 576`, `max_payload = 640`, and
-  `COMM_RX_RING_SIZE = 1024`. Successful commits return `received_mask = 0x0003`.
-- Bench stress results for this 2-chunk protocol were stable with no errors from
-  `2.00 ms` chunk delay down to `0.00 ms`. At `0.00 ms`, the GUI measured about
-  `61.2 fps`, `avg_frame = 15.7 ms`, `avg_chunks = 4.1 ms`,
-  `avg_pacing = 0.0 ms`, and `avg_wait_rsp = 11.3 ms`.
-- Estimated RAM increase for this protocol is about `1248 bytes`
-  (`comm_protocol_payload +480`, `comm_transport_rx_ring +768`), leaving only
-  about `32 bytes` of link-time SRAM margin based on the last map file. If Keil
-  linking fails or stack safety becomes suspect, the next candidate is to remove
-  `comm_protocol_staging_frame[1152]` or reduce the RX ring.
+- The previous 2-chunk protocol used `chunk_rgb_bytes = 576` and
+  `received_mask = 0x0003`. It was stable in direct single-board tests at about
+  60 fps, but USB Hub multi-board playback still produced RX overflow even with
+  GUI chunk delay around `0.5 ms`.
+- The current protocol keeps the same `8 x 48` logical frame but splits it into
+  4 smaller chunks, with `chunk_rgb_bytes = 288`, `COMM_RX_RING_SIZE = 1536`,
+  and successful commits returning `received_mask = 0x000f`.
+- This 4-chunk change does not increase firmware frame RAM; it only adds two
+  extra protocol packets per frame and reduces each USB OUT burst.
+- Current heap was reduced from `0x200` to `0x80` to make room for the 1536-byte
+  RX ring while keeping stack at `0x400`.
 
 - Current GUI defaults are therefore:
-  - default chunk delay: `0 ms`,
+  - default chunk delay: `0.25 ms`,
   - default breath target: `60 fps`.
 - This is the current validated closed-loop bench-control setting.
 

@@ -13,7 +13,7 @@
 /* Host protocol parser and frame transaction manager. */
 #define COMM_PROTOCOL_UID_WORDS             3U
 #define COMM_PROTOCOL_UID_BASE_ADDRESS      0x1FFFF7E8UL
-#define COMM_PROTOCOL_FRAME_RECEIVED_MASK   0x0003U
+#define COMM_PROTOCOL_FRAME_RECEIVED_MASK   0x000FU
 #define COMM_PROTOCOL_FRAME_BEGIN_LEN       12U
 #define COMM_PROTOCOL_CHUNK_HEADER_LEN      5U
 #define COMM_PROTOCOL_CHUNK_PAYLOAD_LEN     (COMM_PROTOCOL_CHUNK_HEADER_LEN + COMM_PROTOCOL_CHUNK_RGB_BYTES)
@@ -490,7 +490,7 @@ static void CommProtocol_HandleFrameChunk(void)
   uint16_t pixel;
   const uint8_t *src;
 
-  /* Each RGB chunk fills four complete logical lanes. */
+  /* Each RGB chunk fills two complete logical lanes. */
   if (comm_protocol_payload_len != COMM_PROTOCOL_CHUNK_PAYLOAD_LEN)
   {
     comm_protocol_transaction.severe_error = 1U;
