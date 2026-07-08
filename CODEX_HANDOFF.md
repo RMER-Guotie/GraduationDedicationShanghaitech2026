@@ -825,6 +825,59 @@ Current GUI features:
 - GUI high-rate playback should run outside the main Qt UI path where practical
   so the UI remains responsive during multi-board sends.
 
+Windows autoplay runtime:
+
+- New entry point:
+
+```powershell
+cd host_tool
+powershell -ExecutionPolicy Bypass -File .\autoplay.ps1
+```
+
+- `autoplay.ps1` opens a console, enters `host_tool`, uses
+  `.venv\Scripts\python.exe` when present, and repeatedly runs:
+
+```powershell
+python -m tools.autoplay
+```
+
+- `install_autostart.ps1` creates a current-user Windows Startup shortcut to
+  `autoplay.ps1`; `uninstall_autostart.ps1` removes that shortcut.
+- Fixed playback files are expected under `host_tool\autoplay\`:
+
+```text
+mode1.pixelbin
+mode2.pixelbin
+mode3.pixelbin
+mode4.pixelbin
+```
+
+- Startup flow:
+  - scan visible USB CDC COM ports,
+  - send HELLO and keep boards with valid `role_id` in range `1..20`,
+  - map connected boards by `role_id` ascending to slot 1..4,
+  - wait until four controllers are connected,
+  - while waiting, poll connected boards with `STATUS_REQ`,
+  - if any connected board reports nonzero `rc_stable_bits`, stop waiting for
+    missing boards and force playback immediately.
+- RC mapping:
+  - bit0 -> `mode1.pixelbin`,
+  - bit1 -> `mode2.pixelbin`,
+  - bit2 -> `mode3.pixelbin`,
+  - bit3 -> `mode4.pixelbin`.
+- During playback, RC status is polled periodically and mode switches take
+  effect at frame boundaries.
+- Missing or failed boards are logged and skipped; other boards continue.
+- If playback is forced by RC before all boards are present, the first version
+  cannot know which absent physical role should occupy which slot unless a
+  fixed role map is provided later. It therefore compactly maps currently
+  connected boards by ascending `role_id` and logs this as a forced partial
+  mapping.
+- This first version does not change firmware protocol. It uses the existing
+  `STATUS_RSP.rc_stable_bits` field. If the RC receiver is pulse-like and the
+  pulse is shorter than the host polling interval, add a firmware-side
+  `rc_changed_bits` or RC event counter later.
+
 Validation performed:
 
 ```text

@@ -80,6 +80,66 @@ Example config for four physical boards selected from PCB IDs `1..20`:
 }
 ```
 
+## Windows Autoplay
+
+Autoplay is intended for the installed display PC. It opens a console, scans USB
+CDC devices, waits for four controller boards, and loops fixed local mode files.
+
+Prepare the host environment once:
+
+```powershell
+cd host_tool
+powershell -ExecutionPolicy Bypass -File .\setup_host_env.ps1
+```
+
+Place the four mode files under `host_tool\autoplay\`:
+
+```text
+mode1.pixelbin
+mode2.pixelbin
+mode3.pixelbin
+mode4.pixelbin
+```
+
+Run manually:
+
+```powershell
+cd host_tool
+powershell -ExecutionPolicy Bypass -File .\autoplay.ps1
+```
+
+Install Windows current-user startup:
+
+```powershell
+cd host_tool
+powershell -ExecutionPolicy Bypass -File .\install_autostart.ps1
+```
+
+Remove startup:
+
+```powershell
+cd host_tool
+powershell -ExecutionPolicy Bypass -File .\uninstall_autostart.ps1
+```
+
+Autoplay behavior:
+
+- Scans visible COM ports and sends HELLO until four valid controllers are
+  connected.
+- Maps connected controllers by `role_id` ascending to slot 1..4.
+- Polls `STATUS_RSP.rc_stable_bits` on connected boards while waiting and during
+  playback.
+- RC bit0..bit3 selects `mode1`..`mode4`.
+- If any RC command appears before all four boards are connected, autoplay stops
+  waiting for missing boards and starts with the connected subset.
+- Missing or failed boards are logged in the console and skipped; other boards
+  continue.
+
+The first version uses the existing `STATUS_RSP.rc_stable_bits` field, so no
+firmware protocol change is required. If the RC receiver outputs short pulses
+that return to zero faster than the host polling interval, add a firmware
+edge/event counter later.
+
 ## GUI Usage
 
 Run the debug GUI from the `host_tool` directory:
