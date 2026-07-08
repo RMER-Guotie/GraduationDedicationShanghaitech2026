@@ -2,6 +2,15 @@
 
 First-stage Python host tools for the firmware USB CDC/UART protocol.
 
+## Project Documents
+
+- `../SYSTEM_ARCHITECTURE.md`: overall firmware/host architecture, hardware
+  mapping, RAM/protocol decisions, and validation history.
+- `../CODEX_HANDOFF.md`: Chinese practical handoff with setup, usage,
+  validation status, and next test priorities.
+- `../COMM_PROTOCOL.md`: host-facing USB/UART packet protocol.
+- `../CODEX_RULES.md`: collaboration and change-authorization rules.
+
 ## Setup
 
 ```powershell
