@@ -101,13 +101,12 @@ cd host_tool
 powershell -ExecutionPolicy Bypass -File .\setup_host_env.ps1
 ```
 
-Place the four mode files under `host_tool\autoplay\`:
+Place the autoplay files under `host_tool\autoplay\`:
 
 ```text
 mode1.pixelbin
 mode2.pixelbin
-mode3.pixelbin
-mode4.pixelbin
+black.pixelbin
 ```
 
 Run manually:
@@ -136,18 +135,19 @@ Autoplay behavior:
 - Scans visible COM ports and sends HELLO until four valid controllers are
   connected.
 - Maps connected controllers by `role_id` ascending to slot 1..4.
-- Polls `STATUS_RSP.rc_stable_bits` on connected boards while waiting and during
-  playback.
-- RC bit0..bit3 selects `mode1`..`mode4`.
+- Polls `STATUS_RSP.rc_event_bits` on connected boards while waiting and during
+  playback. The firmware latches debounced press events until STATUS reports
+  them.
+- RC bit0 selects `mode1.pixelbin`.
+- RC bit1 selects `mode2.pixelbin`.
+- RC bit2 selects `black.pixelbin`.
+- RC bit3 selects pause. Pause stops submitting RGB frames and keeps the current
+  display output until another action is selected.
+- Repeating the currently active RC action is ignored.
 - If any RC command appears before all four boards are connected, autoplay stops
   waiting for missing boards and starts with the connected subset.
 - Missing or failed boards are logged in the console and skipped; other boards
   continue.
-
-The first version uses the existing `STATUS_RSP.rc_stable_bits` field, so no
-firmware protocol change is required. If the RC receiver outputs short pulses
-that return to zero faster than the host polling interval, add a firmware
-edge/event counter later.
 
 ## GUI Usage
 
@@ -157,8 +157,20 @@ Run the debug GUI from the `host_tool` directory:
 python -m tools.gui
 ```
 
-The first GUI version supports port scanning, connect/disconnect, HELLO, STATUS,
-ALL_BLACK, solid RGB output, and an 8-lane color test frame.
+The GUI supports automatic board scanning, slot status display, single-channel
+RGB test output, repeat-send stress testing, file playback, and RC/mode debug.
+
+The `RC / Mode` buttons mirror the four downstream RC press events:
+
+- `Mode 1`: loop `host_tool\autoplay\mode1.pixelbin`
+- `Mode 2`: loop `host_tool\autoplay\mode2.pixelbin`
+- `Black`: loop `host_tool\autoplay\black.pixelbin`
+- `Pause`: stop submitting RGB frames and keep the current output
+
+When any connected controller reports `STATUS_RSP.rc_event_bits`, the matching
+GUI button is highlighted and the same action is triggered. Clicking a
+non-highlighted GUI button also triggers that action; clicking the already
+highlighted action is ignored.
 
 ## Offline Video Generator
 

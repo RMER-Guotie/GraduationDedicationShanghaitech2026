@@ -27,12 +27,14 @@ static const RemoteInput_PinMap_t remote_input_pin_map[REMOTE_INPUT_CHANNEL_COUN
 volatile uint8_t remote_input_watch_raw_bits;
 volatile uint8_t remote_input_watch_stable_bits;
 volatile uint8_t remote_input_watch_changed_bits;
+volatile uint8_t remote_input_watch_pressed_bits;
 volatile uint32_t remote_input_watch_edge_count[REMOTE_INPUT_CHANNEL_COUNT];
 
 static volatile uint8_t remote_input_raw_bits;
 static uint8_t remote_input_candidate_bits;
 static uint8_t remote_input_stable_bits;
 static uint8_t remote_input_changed_bits;
+static uint8_t remote_input_pressed_bits;
 static uint32_t remote_input_candidate_since_ms;
 static volatile uint32_t remote_input_edge_count[REMOTE_INPUT_CHANNEL_COUNT];
 
@@ -72,6 +74,7 @@ void RemoteInput_Init(void)
   remote_input_candidate_bits = remote_input_raw_bits;
   remote_input_stable_bits = remote_input_raw_bits;
   remote_input_changed_bits = 0U;
+  remote_input_pressed_bits = 0U;
   remote_input_candidate_since_ms = HAL_GetTick();
 
   for (channel = 0U; channel < REMOTE_INPUT_CHANNEL_COUNT; channel++)
@@ -87,6 +90,7 @@ void RemoteInput_Init(void)
   remote_input_candidate_bits = 0U;
   remote_input_stable_bits = 0U;
   remote_input_changed_bits = 0U;
+  remote_input_pressed_bits = 0U;
   remote_input_candidate_since_ms = 0U;
   for (channel = 0U; channel < REMOTE_INPUT_CHANNEL_COUNT; channel++)
   {
@@ -101,6 +105,8 @@ void RemoteInput_Poll(uint32_t now_ms)
 #if (APP_ENABLE_REMOTE_INPUT != 0U)
   uint8_t raw_bits;
   uint8_t changed_bits;
+  uint8_t pressed_bits;
+  uint8_t previous_stable_bits;
 
   /* Debounce the latest EXTI-updated raw state before publishing it. */
   raw_bits = remote_input_raw_bits;
@@ -125,9 +131,12 @@ void RemoteInput_Poll(uint32_t now_ms)
     return;
   }
 
-  changed_bits = (uint8_t)((remote_input_stable_bits ^ raw_bits) & REMOTE_INPUT_VALID_MASK);
+  previous_stable_bits = remote_input_stable_bits;
+  changed_bits = (uint8_t)((previous_stable_bits ^ raw_bits) & REMOTE_INPUT_VALID_MASK);
+  pressed_bits = (uint8_t)(((uint8_t)(~previous_stable_bits) & raw_bits) & REMOTE_INPUT_VALID_MASK);
   remote_input_stable_bits = raw_bits;
   remote_input_changed_bits = (uint8_t)((remote_input_changed_bits | changed_bits) & REMOTE_INPUT_VALID_MASK);
+  remote_input_pressed_bits = (uint8_t)((remote_input_pressed_bits | pressed_bits) & REMOTE_INPUT_VALID_MASK);
 
   RemoteInput_UpdateWatch();
 #else
@@ -136,6 +145,7 @@ void RemoteInput_Poll(uint32_t now_ms)
   remote_input_candidate_bits = 0U;
   remote_input_stable_bits = 0U;
   remote_input_changed_bits = 0U;
+  remote_input_pressed_bits = 0U;
   RemoteInput_UpdateWatch();
 #endif
 }
@@ -170,6 +180,22 @@ uint8_t RemoteInput_ConsumeChangedBits(void)
   return changed_bits;
 #else
   remote_input_changed_bits = 0U;
+  RemoteInput_UpdateWatch();
+  return 0U;
+#endif
+}
+
+uint8_t RemoteInput_ConsumePressedBits(void)
+{
+#if (APP_ENABLE_REMOTE_INPUT != 0U)
+  uint8_t pressed_bits = remote_input_pressed_bits;
+
+  remote_input_pressed_bits = 0U;
+  RemoteInput_UpdateWatch();
+
+  return pressed_bits;
+#else
+  remote_input_pressed_bits = 0U;
   RemoteInput_UpdateWatch();
   return 0U;
 #endif
@@ -258,6 +284,7 @@ static void RemoteInput_UpdateWatch(void)
   remote_input_watch_raw_bits = remote_input_raw_bits;
   remote_input_watch_stable_bits = remote_input_stable_bits;
   remote_input_watch_changed_bits = remote_input_changed_bits;
+  remote_input_watch_pressed_bits = remote_input_pressed_bits;
 
   for (channel = 0U; channel < REMOTE_INPUT_CHANNEL_COUNT; channel++)
   {

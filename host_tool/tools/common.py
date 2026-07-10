@@ -36,7 +36,10 @@ def print_hello(hello: proto.HelloResponse) -> None:
 
 def print_status(status: proto.StatusResponse) -> None:
     print(f"uid_hash={proto.format_uid(status.uid_hash)} flags={proto.status_flags_to_text(status.status_flags)}")
-    print(f"active_link={status.active_link} rc_bits=0b{status.rc_stable_bits:04b} rx_used={status.rx_used}")
+    print(
+        f"active_link={status.active_link} rc_bits=0b{status.rc_stable_bits:04b} "
+        f"rc_events=0b{status.rc_event_bits:04b} rx_used={status.rx_used}"
+    )
     print(f"current_ma={status.current_ma} ww={status.ww_current} cw={status.cw_current}")
     print(f"frame_id={status.frame_id} received_mask=0x{status.received_mask:04x}")
     print(f"packet_count={status.packet_count} error_count={status.error_count} commit_count={status.commit_count}")

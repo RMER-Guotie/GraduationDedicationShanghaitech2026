@@ -10,8 +10,10 @@ or other high-cost action.
   `C:\Users\RMER_guotie\Desktop\graduation\pixel`
 - Do not use or modify:
   `C:\Users\RMER_guotie\Desktop\graduation\bsrr_test`
-- `CODEX_HANDOFF.md` records architecture, implementation status, hardware
-  mapping, RAM/protocol decisions, progress, and known issues.
+- `SYSTEM_ARCHITECTURE.md` records system architecture, implementation status,
+  hardware mapping, RAM/protocol decisions, progress, and known issues.
+- `CODEX_HANDOFF.md` records the practical Chinese handoff, file structure,
+  setup steps, usage notes, validation status, and next test priorities.
 - `CODEX_RULES.md` records collaboration rules, permissions, and workflow.
 
 ## Reply Rules
@@ -37,8 +39,8 @@ or other high-cost action.
   build/test tools until the user has authorized that specific action.
 - If the user does not authorize, or provides new design feedback, continue
   information gathering or revise the plan.
-- Editing `CODEX_RULES.md` or `CODEX_HANDOFF.md` is itself subject to this same
-  information and authorization flow.
+- Editing `CODEX_RULES.md`, `SYSTEM_ARCHITECTURE.md`, or `CODEX_HANDOFF.md` is
+  itself subject to this same information and authorization flow.
 
 ## Code And Project Change Rules
 
@@ -60,4 +62,3 @@ or other high-cost action.
   authorizes Codex to build/run.
 - Ask for authorization before any action that is time-consuming, costly, or may
   consume substantial context/tool budget.
-

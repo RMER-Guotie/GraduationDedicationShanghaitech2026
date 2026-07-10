@@ -23,6 +23,8 @@ uint8_t RemoteInput_GetRawBits(void);
 uint8_t RemoteInput_GetStableBits(void);
 /* Return and clear debounced change flags. */
 uint8_t RemoteInput_ConsumeChangedBits(void);
+/* Return and clear debounced press event flags. */
+uint8_t RemoteInput_ConsumePressedBits(void);
 /* Return the raw EXTI edge count for one channel. */
 uint32_t RemoteInput_GetEdgeCount(uint8_t channel);
 
@@ -30,6 +32,7 @@ uint32_t RemoteInput_GetEdgeCount(uint8_t channel);
 extern volatile uint8_t remote_input_watch_raw_bits;
 extern volatile uint8_t remote_input_watch_stable_bits;
 extern volatile uint8_t remote_input_watch_changed_bits;
+extern volatile uint8_t remote_input_watch_pressed_bits;
 extern volatile uint32_t remote_input_watch_edge_count[REMOTE_INPUT_CHANNEL_COUNT];
 
 #ifdef __cplusplus

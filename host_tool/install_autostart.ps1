@@ -24,5 +24,5 @@ $Shortcut.Save()
 
 Write-Host "Installed startup shortcut:"
 Write-Host $ShortcutPath
-Write-Host "Place mode1.pixelbin..mode4.pixelbin under:"
+Write-Host "Place mode1.pixelbin, mode2.pixelbin, and black.pixelbin under:"
 Write-Host (Join-Path $ScriptDir "autoplay")

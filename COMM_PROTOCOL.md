@@ -123,6 +123,7 @@ not depend on COM port order.
 status_flags       2 bytes
 active_link        1 byte   0 none, 1 USB, 2 UART
 rc_stable_bits     1 byte
+rc_event_bits      1 byte   debounced press events, cleared after STATUS_RSP
 rx_used            2 bytes
 frame_id           2 bytes
 received_mask      2 bytes

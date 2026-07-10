@@ -47,7 +47,7 @@ STATUS_FLAG_FAULT = 0x0001
 STATUS_FLAG_PENDING = 0x0002
 STATUS_FLAG_HOST = 0x0004
 STATUS_FLAG_TXN = 0x0008
-STATUS_RSP_FORMAT = "<HBBHHHIIIHHII"
+STATUS_RSP_FORMAT = "<HBBBHHHIIIHHII"
 STATUS_RSP_SIZE = struct.calcsize(STATUS_RSP_FORMAT)
 
 
@@ -84,6 +84,7 @@ class StatusResponse:
     status_flags: int
     active_link: int
     rc_stable_bits: int
+    rc_event_bits: int
     rx_used: int
     frame_id: int
     received_mask: int

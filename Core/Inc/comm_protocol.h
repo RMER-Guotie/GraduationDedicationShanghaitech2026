@@ -76,6 +76,7 @@ extern volatile uint32_t comm_protocol_watch_show_start_ms;
 extern volatile uint32_t comm_protocol_watch_commit_rsp_ms;
 extern volatile uint32_t comm_protocol_watch_frame_rx_span_ms;
 extern volatile uint32_t comm_protocol_watch_commit_to_rsp_ms;
+extern volatile uint8_t comm_protocol_watch_rc_event_bits;
 
 #ifdef __cplusplus
 }

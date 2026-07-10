@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 import queue
 import threading
 import time
@@ -41,6 +42,25 @@ DEFAULT_BAUD = 115200
 DEFAULT_RESPONSE_TIMEOUT_S = 1.0
 DEFAULT_CHUNK_DELAY_MS = 0.25
 FRAME_RGB_BYTES = proto.LANES * proto.LEDS_PER_LANE * 3
+RC_POLL_INTERVAL_MS = 100
+AUTOPLAY_DIR = Path(__file__).resolve().parents[1] / "autoplay"
+
+ACTION_MODE1 = "mode1"
+ACTION_MODE2 = "mode2"
+ACTION_BLACK = "black"
+ACTION_PAUSE = "pause"
+RC_ACTION_ORDER = (ACTION_MODE1, ACTION_MODE2, ACTION_BLACK, ACTION_PAUSE)
+RC_ACTION_LABELS = {
+    ACTION_MODE1: "Mode 1",
+    ACTION_MODE2: "Mode 2",
+    ACTION_BLACK: "Black",
+    ACTION_PAUSE: "Pause",
+}
+RC_ACTION_FILES = {
+    ACTION_MODE1: "mode1.pixelbin",
+    ACTION_MODE2: "mode2.pixelbin",
+    ACTION_BLACK: "black.pixelbin",
+}
 
 
 @dataclass
@@ -58,6 +78,15 @@ class BoardSession:
     ok_frames: int = 0
     error_count: int = 0
     skipped_count: int = 0
+    io_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+
+def action_from_rc_bits(bits: int) -> str | None:
+    """Map latched RC press bits to one GUI action."""
+    for bit_index, action in enumerate(RC_ACTION_ORDER):
+        if bits & (1 << bit_index):
+            return action
+    return None
 
 
 class PlaybackControl:
@@ -128,12 +157,13 @@ class SlotSender(threading.Thread):
 
             frame_index, frame_rgb, ww, cw = item
             try:
-                commit = self.session.device.send_frame(
-                    frame_rgb,
-                    ww=ww,
-                    cw=cw,
-                    chunk_delay_s=self.control.get_chunk_delay_s(),
-                )
+                with self.session.io_lock:
+                    commit = self.session.device.send_frame(
+                        frame_rgb,
+                        ww=ww,
+                        cw=cw,
+                        chunk_delay_s=self.control.get_chunk_delay_s(),
+                    )
                 if commit.status == proto.OK:
                     self.session.ok_frames += 1
                     self.session.state = "connected"
@@ -235,6 +265,36 @@ class PlaybackWorker(threading.Thread):
                 self.log_queue.put(f"slot {slot_id} missing, playback will skip it")
 
 
+class RcPollWorker(threading.Thread):
+    """Poll STATUS in the background and forward latched RC press events."""
+
+    def __init__(
+        self,
+        sessions: list[BoardSession],
+        event_queue: queue.Queue[tuple[int, int, int]],
+    ) -> None:
+        super().__init__(daemon=True)
+        self.sessions = sessions
+        self.event_queue = event_queue
+
+    def run(self) -> None:
+        for session in self.sessions:
+            if not session.io_lock.acquire(timeout=0.002):
+                continue
+            try:
+                status = session.device.status()
+                session.state = "connected"
+                session.last_error = ""
+                if status.rc_event_bits:
+                    self.event_queue.put((session.slot_id, session.role_id, status.rc_event_bits))
+            except Exception as exc:  # noqa: BLE001
+                session.state = "error"
+                session.error_count += 1
+                session.last_error = f"status: {exc}"
+            finally:
+                session.io_lock.release()
+
+
 class AutoConnectWorker(threading.Thread):
     """Scan serial ports and open valid boards without blocking the Qt event loop."""
 
@@ -308,13 +368,16 @@ class MainWindow(QMainWindow):
         self.playback_control = PlaybackControl()
         self.playback_worker: Optional[PlaybackWorker] = None
         self.auto_connect_worker: Optional[AutoConnectWorker] = None
+        self.rc_poll_worker: Optional[RcPollWorker] = None
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.connect_result_queue: queue.Queue[dict[int, BoardSession]] = queue.Queue()
+        self.rc_event_queue: queue.Queue[tuple[int, int, int]] = queue.Queue()
         self.slot_frames = {slot_id: bytearray(FRAME_RGB_BYTES) for slot_id in range(1, MAX_ACTIVE_BOARDS + 1)}
         self.repeat_send_active = False
         self.repeat_send_busy = False
         self.repeat_send_count = 0
         self.repeat_send_skip_count = 0
+        self.active_rc_action: Optional[str] = None
 
         self.log_timer = QTimer(self)
         self.log_timer.timeout.connect(self._drain_log_queue)
@@ -326,6 +389,10 @@ class MainWindow(QMainWindow):
 
         self.repeat_send_timer = QTimer(self)
         self.repeat_send_timer.timeout.connect(self._repeat_channel_test_tick)
+
+        self.rc_timer = QTimer(self)
+        self.rc_timer.timeout.connect(self._poll_rc_events)
+        self.rc_timer.start(RC_POLL_INTERVAL_MS)
 
         root = QWidget(self)
         self.setCentralWidget(root)
@@ -434,6 +501,7 @@ class MainWindow(QMainWindow):
         self.chunk_delay_spin.setSuffix(" ms")
         self.file_label = QLabel("No file")
         self.file_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.rc_action_buttons: dict[str, QPushButton] = {}
 
         self.channel_test_button.clicked.connect(lambda: self.send_channel_test())
         self.repeat_test_button.clicked.connect(lambda: self.toggle_repeat_channel_test())
@@ -453,10 +521,21 @@ class MainWindow(QMainWindow):
         playback_row.addWidget(self.chunk_delay_spin)
         playback_row.addWidget(self.file_label, 1)
 
+        rc_row = QHBoxLayout()
+        rc_row.addWidget(QLabel("RC / Mode"))
+        for action in RC_ACTION_ORDER:
+            button = QPushButton(RC_ACTION_LABELS[action])
+            button.setCheckable(True)
+            button.clicked.connect(lambda _checked=False, current=action: self.trigger_rc_action(current, "GUI"))
+            self.rc_action_buttons[action] = button
+            rc_row.addWidget(button)
+        rc_row.addStretch(1)
+
         layout.addLayout(form, 0, 0)
         layout.addWidget(self.channel_test_button, 1, 0)
         layout.addWidget(self.repeat_test_button, 2, 0)
         layout.addLayout(playback_row, 0, 1, 2, 1)
+        layout.addLayout(rc_row, 2, 1)
         layout.setColumnStretch(1, 1)
         return group
 
@@ -506,6 +585,8 @@ class MainWindow(QMainWindow):
         if log_disconnect and self.sessions:
             self.log("Disconnected all boards")
         self.sessions.clear()
+        self.set_active_rc_action(None)
+        self.clear_pending_rc_events()
         self.update_slot_status()
 
     def send_channel_test(self) -> None:
@@ -597,12 +678,13 @@ class MainWindow(QMainWindow):
         for current_slot_id, current_session in sorted(self.sessions.items()):
             frame = bytes(self.slot_frames[current_slot_id])
             try:
-                commit = current_session.device.send_frame(
-                    frame,
-                    ww=self.ww_spin.value(),
-                    cw=self.cw_spin.value(),
-                    chunk_delay_s=self.chunk_delay_spin.value() / 1000.0,
-                )
+                with current_session.io_lock:
+                    commit = current_session.device.send_frame(
+                        frame,
+                        ww=self.ww_spin.value(),
+                        cw=self.cw_spin.value(),
+                        chunk_delay_s=self.chunk_delay_spin.value() / 1000.0,
+                    )
                 if commit.status == proto.OK:
                     current_session.ok_frames += 1
                     current_session.state = "connected"
@@ -648,6 +730,13 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
+        if not self.load_playback_file(path, show_error=True):
+            return
+
+        self.set_active_rc_action(None)
+        self.start_playback()
+
+    def load_playback_file(self, path: str, show_error: bool) -> bool:
         try:
             with PixelBinReader(path) as reader:
                 if reader.header.board_count != MAX_ACTIVE_BOARDS:
@@ -656,24 +745,24 @@ class MainWindow(QMainWindow):
                     raise ValueError("pixelbin geometry does not match current protocol")
                 self.file_label.setText(path)
                 self.playback_path = path
+                return True
         except Exception as exc:  # noqa: BLE001
-            self.log(f"Import failed: {exc}")
-            QMessageBox.critical(self, "Import failed", str(exc))
-            return
+            self.log(f"File load failed: {exc}")
+            if show_error:
+                QMessageBox.critical(self, "File load failed", str(exc))
+            return False
 
-        self.start_playback()
-
-    def start_playback(self) -> None:
+    def start_playback(self) -> bool:
         if self.playback_path is None:
-            return
+            return False
         if self.repeat_send_active:
             self.log("Playback blocked while repeat channel test is active")
             QMessageBox.warning(self, "Repeat active", "Stop repeat channel testing before file playback.")
-            return
+            return False
         if not self.sessions:
             self.log("No connected boards; playback not started")
             QMessageBox.warning(self, "No boards", "Auto connect at least one board before playback.")
-            return
+            return False
 
         self.stop_playback()
         self.playback_control.stop_event.clear()
@@ -683,6 +772,7 @@ class MainWindow(QMainWindow):
         self.playback_worker = PlaybackWorker(self.playback_path, self.sessions, self.playback_control, self.log_queue)
         self.playback_worker.start()
         self._set_playback_running(True)
+        return True
 
     def toggle_pause(self) -> None:
         if self.playback_worker is None or not self.playback_worker.is_alive():
@@ -695,6 +785,63 @@ class MainWindow(QMainWindow):
             self.playback_control.pause_event.set()
             self.pause_button.setText("Resume")
             self.log("PLAY paused")
+
+    def trigger_rc_action(self, action: str, source: str) -> None:
+        if action not in RC_ACTION_ORDER:
+            return
+
+        if action == self.active_rc_action:
+            self.update_rc_action_buttons()
+            self.log(f"{source} {RC_ACTION_LABELS[action]} ignored; already active")
+            return
+
+        if action == ACTION_PAUSE:
+            self.stop_repeat_channel_test()
+            if self.is_playback_active():
+                self.playback_control.pause_event.set()
+                self.pause_button.setText("Resume")
+            self.set_active_rc_action(action)
+            self.log(f"{source} selected {RC_ACTION_LABELS[action]}; RGB submission paused")
+            return
+
+        path = self.rc_action_path(action)
+        if path is None:
+            return
+        if not path.exists():
+            self.log(f"{source} {RC_ACTION_LABELS[action]} missing file: {path}")
+            if source == "GUI":
+                QMessageBox.warning(self, "Missing file", f"Missing demo file:\n{path}")
+            self.update_rc_action_buttons()
+            return
+
+        if not self.load_playback_file(str(path), show_error=(source == "GUI")):
+            self.update_rc_action_buttons()
+            return
+
+        if self.start_playback():
+            self.set_active_rc_action(action)
+            self.log(f"{source} selected {RC_ACTION_LABELS[action]}: {path}")
+        else:
+            self.update_rc_action_buttons()
+
+    def rc_action_path(self, action: str) -> Path | None:
+        filename = RC_ACTION_FILES.get(action)
+        if filename is None:
+            return None
+        return AUTOPLAY_DIR / filename
+
+    def set_active_rc_action(self, action: Optional[str]) -> None:
+        self.active_rc_action = action
+        self.update_rc_action_buttons()
+
+    def update_rc_action_buttons(self) -> None:
+        for action, button in self.rc_action_buttons.items():
+            active = action == self.active_rc_action
+            button.setChecked(active)
+            if active:
+                button.setStyleSheet("font-weight: 600; background-color: #d8f0ff;")
+            else:
+                button.setStyleSheet("")
 
     def stop_playback(self) -> None:
         if self.playback_worker is not None:
@@ -715,6 +862,43 @@ class MainWindow(QMainWindow):
         self.pause_button.setEnabled(running)
         self.stop_playback_button.setEnabled(running)
         self.pause_button.setText("Pause")
+
+    def _poll_rc_events(self) -> None:
+        self._drain_rc_events()
+        if self.rc_poll_worker is not None and self.rc_poll_worker.is_alive():
+            return
+        if not self.sessions:
+            return
+        if self.auto_connect_worker is not None and self.auto_connect_worker.is_alive():
+            return
+
+        self.rc_poll_worker = RcPollWorker(list(self.sessions.values()), self.rc_event_queue)
+        self.rc_poll_worker.start()
+
+    def _drain_rc_events(self) -> None:
+        while True:
+            try:
+                slot_id, role_id, bits = self.rc_event_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            action = action_from_rc_bits(bits)
+            if action is None:
+                self.log(f"RC slot={slot_id} role={role_id} bits=0b{bits:04b} ignored")
+                continue
+
+            self.log(
+                f"RC slot={slot_id} role={role_id} bits=0b{bits:04b} "
+                f"-> {RC_ACTION_LABELS[action]}"
+            )
+            self.trigger_rc_action(action, "RC")
+
+    def clear_pending_rc_events(self) -> None:
+        while True:
+            try:
+                self.rc_event_queue.get_nowait()
+            except queue.Empty:
+                break
 
     def update_slot_status(self) -> None:
         self._drain_connect_results()
@@ -751,6 +935,7 @@ class MainWindow(QMainWindow):
             except queue.Empty:
                 break
         self._drain_connect_results()
+        self._drain_rc_events()
 
     def _drain_connect_results(self) -> None:
         updated = False

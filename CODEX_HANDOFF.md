@@ -1,971 +1,63 @@
-﻿# Pixel Controller Firmware Handoff
+# Pixel Light 中文交接手册
 
-## Workspace / Codex Launch Note
+本文件用于实际交接和快速上手。系统整体技术方案、RAM 论证、协议演进和历史决策放在 `SYSTEM_ARCHITECTURE.md`；协作规则放在 `CODEX_RULES.md`。
 
-- For this project, start or reopen Codex with the working directory set to:
-  `C:\Users\RMER_guotie\Desktop\graduation\pixel`
-- If Codex is launched from `graduation\bsrr_test` while editing `graduation\pixel`, writes to the real project require approval/escalation and the client may not show the usual clickable `+xx -xx` diff card.
-- If the diff card disappears after edits, first check that Codex's workspace/cwd is the `pixel` repo root, then continue work there.
+## 当前工程位置
 
-## Project Rules
+- 正确工程目录：`C:\Users\RMER_guotie\Desktop\graduation\pixel`
+- 不要使用旧目录：`C:\Users\RMER_guotie\Desktop\graduation\bsrr_test`
+- CubeMX 工程：`pixel_light.ioc`
+- Keil 工程：`MDK-ARM\PIXEL_LIGHT.uvprojx`
+- 主协议文档：`COMM_PROTOCOL.md`
+- 上位机目录：`host_tool`
 
-- Important collaboration rules are maintained in `CODEX_RULES.md`.
-- Read `CODEX_RULES.md` before making any plan, code change, document change,
-  `.ioc` change, build, run, or other high-cost action.
-- This handoff file is for architecture, implementation status, hardware mapping,
-  RAM/protocol decisions, progress, and known issues.
+当前本地仓库在 `main` 分支。若需要推送，先检查 `git status --short --branch`，避免把本地测试文件或大 `.pixelbin` 文件带入提交。
 
-## Current Repo / Git Notes
+## 文件结构
 
-- Project is now a git repo at `C:\Users\RMER_guotie\Desktop\graduation\pixel`.
-- Initial commit seen previously:
-  `d6daa65 first commit of bsrr test of graduation_dedication`
-- A previous Keil build was run before the user asked not to compile further. This updated files under:
-  `MDK-ARM\PIXEL_LIGHT\`
-  including `.axf`, `.hex`, `.o`, `.map`, `.htm`, `.dep`, etc.
-- Those build artifacts may appear in `git status` as modified/untracked. They are build outputs, not source edits.
+下位机应用层核心文件：
 
-## Hardware / Pin Mapping Confirmed From Correct Project
+- `Core/Inc/app_config.h`：常用功能开关、板号、通信、白光、检流参数。
+- `Core/Src/app_controller.c`：应用层调度入口，主循环中调用。
+- `Core/Src/ws2812_bsr_dma.c`：TIM4 + DMA + GPIOA BSRR 驱动 WS2812。
+- `Core/Src/white_pwm.c`：TIM1 CH1/CH2 白光 PWM。
+- `Core/Src/remote_input.c`：RC 四路输入，EXTI + debounce。
+- `Core/Src/current_protect.c`：ADC 检流和过流锁死逻辑，目前宏关闭。
+- `Core/Src/comm_transport.c`：USB CDC / UART 字节传输层和 RX ring。
+- `Core/Src/comm_protocol.c`：USB/UART 自定义协议、拼包、commit、状态返回。
+- `USB_DEVICE\App\usbd_cdc_if.c`：USB CDC 接收回调入口。
 
-- MCU/project: STM32F103, Cube HAL project, Keil MDK project file `MDK-ARM\PIXEL_LIGHT.uvprojx`.
-- WS2812 lanes use GPIOA:
-  - CH1 = PA0
-  - CH2 = PA1
-  - CH3 = PA2
-  - CH4 = PA3
-  - CH5 = PA4
-  - CH6 = PA5
-  - CH7 = PA6
-  - CH8 = PA7
-- System-level LED array uses at least 4 downstream controller boards.
-- Each downstream controller board physically controls `8 x 96` WS2812B LEDs:
-  8 output channels, 48 small boards per channel, 2 WS2812B LEDs per small board.
-- The current host protocol addresses `8 x 48` logical pixels. Firmware expands
-  each logical pixel to the two cascaded physical LEDs on the same small board.
-- The aggregate system is therefore at least `32 x 96` WS2812B LEDs, but this is
-  split across multiple controllers. A single STM32 firmware instance must not
-  allocate buffers for the whole aggregate array.
-- `PA0-PA7` are configured high speed output in `.ioc` / regenerated GPIO code.
-- TIM1 PWM pins are reserved for white LEDs:
-  - `TIM1_CH1 / PA8 = WW` warm white
-  - `TIM1_CH2 / PA9 = CW` cold white
-- RC inputs intended mapping:
-  - bit0 = RC_D0 = PB11
-  - bit1 = RC_D1 = PB10
-  - bit2 = RC_D2 = PB2
-  - bit3 = RC_D3 = PB1
-- `PB2` is BOOT1-related; hardware must not force wrong boot state at reset.
-- PB0 is current sense input `ADC1_IN8`; generated `Core/Src/adc.c` now configures ADC1 regular conversion on channel 8.
+上位机核心文件：
 
-## Implemented Source Modules
+- `host_tool/pixel_host/protocol.py`：上位机协议打包/解包参数，当前实际协议以这里为准。
+- `host_tool/pixel_host/device.py`：单板 HELLO、STATUS、发帧、ALL_BLACK。
+- `host_tool/pixel_host/gui.py`：调试 GUI，自动连接、多板通道测试、文件播放。
+- `host_tool/pixel_host/video_generator.py`：视频/GIF 转 `.pixelbin`。
+- `host_tool/pixel_host/display_mapping.py`：32x48 逻辑画面到四块板的坐标映射。
+- `host_tool/tools/autoplay.py`：Windows 自启播放状态机。
+- `host_tool/autoplay.ps1`：自启播放脚本。
+- `host_tool/install_autostart.ps1`：安装 Windows 当前用户启动项。
+- `host_tool/setup_host_env.ps1`：自动创建 Python 虚拟环境并安装依赖。
 
-### 1. WS2812 BSRR DMA Test Driver
+重要文档：
 
-Files added:
+- `SYSTEM_ARCHITECTURE.md`：系统架构、模块说明、RAM、协议设计、历史测试记录。
+- `CODEX_HANDOFF.md`：本交接手册。
+- `CODEX_RULES.md`：协作和修改规则。
+- `COMM_PROTOCOL.md`：下位机通信协议说明。若它和代码冲突，先以 `host_tool/pixel_host/protocol.py` 与 `Core/Src/comm_protocol.c` 为准，再同步文档。
+- `host_tool/README.md`：上位机安装和常用命令。
 
-- `Core/Inc/ws2812_bsr_dma.h`
-- `Core/Src/ws2812_bsr_dma.c`
+## 环境安装
 
-Behavior:
+### 下位机
 
-- Drives 8 WS2812 lanes on GPIOA `PA0-PA7` using GPIOA `BSRR` writes.
-- Uses TIM4 as trigger source, not TIM1.
-- DMA mapping used:
-  - `TIM4_UP -> DMA1_Channel7`: set all active lanes high at bit start.
-  - `TIM4_CH1 -> DMA1_Channel1`: reset lanes carrying 0 bits.
-  - `TIM4_CH2 -> DMA1_Channel4`: reset all lanes and trigger transfer complete interrupt.
-- Timing constants in driver:
-  - timer period = 89 ticks, 72 MHz clock assumed, about 1.25 us bit period.
-  - zero compare = 29 ticks, about 0.40 us high.
-  - one compare = 58 ticks, about 0.81 us high.
-- Per-controller data size: `8 lanes x 96 LEDs`, RGB888 stored in software, GRB transmitted to WS2812B.
-- Each lane's 96 LEDs come from `48` small boards with `2` cascaded WS2812B LEDs
-  on each small board.
-- Current RGB software frame is `ws2812_frame[8][96]`, size `2304 bytes`.
-- Current DMA BSRR encoding buffer is `ws2812_zero_reset_buffer[96 * 24]`, size `9216 bytes`.
-  It stores one 32-bit GPIOA BSRR reset mask per WS2812 bit. It is not USB data
-  and is not an RGB frame.
-- `WS2812_BSR_Show()` encodes the current RGB frame, starts three TIM4-paced DMA
-  streams, and returns without blocking.
-- Busy state covers both active DMA transmission and the WS2812 reset latch
-  window. Current latch wait is `1 ms`; current show timeout guard is `20 ms`.
-- Includes test pattern API `WS2812_BSR_TestPatternStep()` for rainbow/breathing visual test.
-- Includes fault API `WS2812_BSR_ForceBlack()` to abort active DMA, force PA0-PA7 low, and clear the frame buffer.
-- Defines `DMA1_Channel4_IRQHandler()` in the driver file to override startup weak handler. No edit was made to `stm32f1xx_it.c`.
-- The built-in test pattern is only a validation mode. Formal host control should
-  replace it with committed protocol frames.
+- 使用 Keil MDK 打开 `MDK-ARM\PIXEL_LIGHT.uvprojx`。
+- 使用 STM32CubeMX 打开 `pixel_light.ioc`。修改 `.ioc` 后需要重新生成代码，再检查 USER CODE 区是否保留。
+- 当前工程目标 MCU 为 STM32F103C8 系列。
 
-Important APIs:
+### 上位机
 
-```c
-void WS2812_BSR_Init(void);
-void WS2812_BSR_Clear(void);
-void WS2812_BSR_FillAll(uint8_t r, uint8_t g, uint8_t b);
-void WS2812_BSR_FillLane(uint8_t lane, uint8_t r, uint8_t g, uint8_t b);
-void WS2812_BSR_SetPixel(uint8_t lane, uint16_t index, uint8_t r, uint8_t g, uint8_t b);
-void WS2812_BSR_Show(void);
-void WS2812_BSR_ForceBlack(void);
-void WS2812_BSR_Poll(void);
-void WS2812_BSR_Wait(void);
-uint8_t WS2812_BSR_IsBusy(void);
-void WS2812_BSR_TestPatternStep(uint32_t now_ms);
-```
-
-Debug globals include show/complete/error/timeout/start-error counters.
-
-### 2. RC Input Module
-
-Files added:
-
-- `Core/Inc/remote_input.h`
-- `Core/Src/remote_input.c`
-
-Behavior:
-
-- Generated `gpio.c` configures PB1/PB2/PB10/PB11 as EXTI rising/falling inputs
-  with pulldown.
-- `RemoteInput_Init()` also reconfigures PB1/PB2/PB10/PB11 as EXTI inputs with
-  pulldown at runtime to keep the RC module robust after future CubeMX
-  regeneration.
-- Active high.
-- EXTI handlers update the raw 4-bit state and raw edge counters.
-- Polling debounce still publishes the stable 4-bit state, default `5 ms`.
-
-APIs:
-
-```c
-void RemoteInput_Init(void);
-void RemoteInput_Poll(uint32_t now_ms);
-uint8_t RemoteInput_GetRawBits(void);
-uint8_t RemoteInput_GetStableBits(void);
-uint8_t RemoteInput_ConsumeChangedBits(void);
-uint32_t RemoteInput_GetEdgeCount(uint8_t channel);
-```
-
-Debug globals:
-
-```c
-remote_input_watch_raw_bits
-remote_input_watch_stable_bits
-remote_input_watch_changed_bits
-remote_input_watch_edge_count[4]
-```
-
-### 3. App Config Header
-
-File added:
-
-- `Core/Inc/app_config.h`
-
-Current intended macros:
-
-```c
-#define APP_RC_ACTIVE_HIGH          1U
-#define APP_RC_PULL_MODE            GPIO_PULLDOWN
-#define APP_RC_DEBOUNCE_MS          5U
-#define APP_TEST_RC_STATUS_ENABLE   1U
-
-#define APP_WHITE_PWM_MAX_LEVEL      1000U
-#define APP_WHITE_PWM_STEP_MS        2U
-#define APP_WHITE_PWM_STEP           5U
-#define APP_WHITE_PWM_TIM1_PSC       0U
-#define APP_WHITE_PWM_TIM1_ARR       3599U
-#define APP_TEST_WHITE_PWM_ENABLE    1U
-
-#define APP_CURRENT_PROTECT_SAMPLE_MS     5U
-#define APP_CURRENT_PROTECT_TRIP_MA       16000U
-#define APP_CURRENT_SENSE_SHUNT_UOHM      500U
-#define APP_CURRENT_SENSE_GAIN            50U
-#define APP_CURRENT_ADC_VREF_MV           3300U
-#define APP_CURRENT_ADC_MAX_COUNTS        4095U
-#define APP_CURRENT_ADC_TIMEOUT_MS        2U
-#define APP_CURRENT_FILTER_SHIFT          3U
-```
-
-Note: `app_config.h` currently uses `GPIO_PULLDOWN`; ensure any file including it already has HAL GPIO definitions through `main.h` or relevant HAL includes. `remote_input.c` includes `main.h` before `app_config.h`, so it is OK there.
-
-### 4. White PWM Module
-
-Files added:
-
-- `Core/Inc/white_pwm.h`
-- `Core/Src/white_pwm.c`
-
-Behavior:
-
-- `TIM1_CH1 = WW` warm white.
-- `TIM1_CH2 = CW` cold white.
-- Physical pins are `PA8 = WW` and `PA9 = CW`.
-- TIM1 target PWM frequency is 20 kHz with `PSC = 0`, `ARR = 3599`, assuming a
-  72 MHz TIM1 clock.
-- Public brightness range: `0..1000`.
-- `Set` APIs update targets only.
-- `WhitePwm_Poll()` smooths current level toward target.
-- Default smoothing: every `2 ms`, step `5 / 1000`, 0 to 100% in about 400 ms.
-- Starts PWM on both TIM1 channels in `WhitePwm_Init()` and initially sets both to 0.
-- Compare value conversion is:
-
-```text
-CCR = round((ARR + 1) * level / 1000)
-```
-
-- `WhitePwm_Off()` is the protection path. It bypasses smoothing and immediately
-  sets target, current, and TIM1 compare values to zero.
-- In the planned communication architecture, WW/CW values are frame metadata and
-  take effect only after a successful `FRAME_COMMIT`.
-
-APIs:
-
-```c
-void WhitePwm_Init(void);
-void WhitePwm_Poll(uint32_t now_ms);
-void WhitePwm_SetWW(uint16_t level);
-void WhitePwm_SetCW(uint16_t level);
-void WhitePwm_SetBoth(uint16_t ww, uint16_t cw);
-uint16_t WhitePwm_GetWW(void);
-uint16_t WhitePwm_GetCW(void);
-void WhitePwm_Off(void);
-```
-
-Debug globals:
-
-```c
-white_pwm_watch_ww_target
-white_pwm_watch_cw_target
-white_pwm_watch_ww_current
-white_pwm_watch_cw_current
-```
-
-### 5. Current Protection Module
-
-Files added:
-
-- `Core/Inc/current_protect.h`
-- `Core/Src/current_protect.c`
-
-Behavior:
-
-- Uses ADC1 regular conversion on `ADC_CHANNEL_8` / PB0.
-- Reconfigures ADC channel 8 at module init for robustness, then starts ADC calibration.
-- Samples every `5 ms` from the cooperative main-loop scheduler.
-- Uses a single software-triggered ADC conversion per sample; no ADC DMA is used.
-- Converts ADC counts using a 0.5 mOhm shunt, 50x current sense gain, 3.3 V reference, and 12-bit ADC full scale.
-- Current conversion formula:
-
-```text
-I_mA = ADC_raw * Vref_mV * 1,000,000 / (4095 * gain * shunt_uohm)
-```
-
-- Applies a small IIR filter before comparing thresholds.
-- Trips at `16000 mA` and latches until MCU reset. There is no software
-  auto-release path.
-- On fault, calls `WhitePwm_Off()` every poll; `WhitePwm_Off()` now immediately zeros target/current levels and TIM1 compare registers.
-- On fault entry, `AppController` calls `WS2812_BSR_ForceBlack()` to abort active WS2812 output and force lanes low.
-- While fault remains active, `AppController` suppresses the WS2812 test pattern and retransmits an all-black WS2812 frame whenever the WS2812 driver is idle.
-- Fault state only clears when the MCU restarts through the Reset key or power
-  cycle.
-
-APIs:
-
-```c
-void CurrentProtect_Init(void);
-void CurrentProtect_Poll(uint32_t now_ms);
-uint8_t CurrentProtect_IsFaultActive(void);
-uint16_t CurrentProtect_GetAdcRaw(void);
-uint32_t CurrentProtect_GetCurrentMa(void);
-```
-
-Debug globals:
-
-```c
-current_protect_watch_adc_raw
-current_protect_watch_current_ma
-current_protect_watch_fault
-current_protect_watch_trip_count
-```
-
-### 6. App Controller Module
-
-Files added:
-
-- `Core/Inc/app_controller.h`
-- `Core/Src/app_controller.c`
-
-Behavior:
-
-- Owns application-level initialization and cooperative scheduling.
-- Keeps Cube-generated `main.c` thin: `main.c` only calls `AppController_Init()` after peripheral init and `AppController_Poll(HAL_GetTick())` in the loop.
-- Poll order is:
-  - `CommTransport_Poll(now_ms)`
-  - `CommProtocol_Poll(now_ms)`
-  - `RemoteInput_Poll(now_ms)`
-  - `CurrentProtect_Poll(now_ms)`
-  - `WhitePwm_Poll(now_ms)`
-  - fault handling or WS2812 test pattern handling
-- On fault entry, calls `WS2812_BSR_ForceBlack()`.
-- During active fault, retransmits black WS2812 frames whenever idle.
-- During normal mode, protocol output owns WS2812 once any valid host protocol
-  packet is received. Before host control starts, the built-in WS2812 validation
-  pattern can still run.
-
-APIs:
-
-```c
-void AppController_Init(void);
-void AppController_Poll(uint32_t now_ms);
-```
-
-Debug globals:
-
-```c
-app_controller_watch_loop_count
-app_controller_watch_fault_active
-app_controller_watch_rc_stable_bits
-```
-
-### 7. Communication Transport Module
-
-Files added:
-
-- `Core/Inc/comm_transport.h`
-- `Core/Src/comm_transport.c`
-
-Behavior:
-
-- Implements the shared byte transport for USB CDC and UART.
-- Defines a statically allocated shared RX ring:
-
-```c
-#define COMM_RX_RING_SIZE  1024U
-uint8_t comm_transport_rx_ring[COMM_RX_RING_SIZE];
-```
-
-- `CDC_Receive_FS()` copies each USB CDC receive callback payload into this ring
-  and immediately re-arms USB receive.
-- No protocol parsing, frame transaction handling, or lighting output update is
-  done in the USB callback.
-- UART RX uses USART1 RX DMA1 Channel5 in circular mode and writes directly into
-  the same `comm_transport_rx_ring[1024]`.
-- USART1 baud is overridden at runtime to `APP_COMM_UART_BAUD = 921600`; `.ioc`
-  was not changed for this step.
-- UART TX does not use DMA. Small responses use blocking `HAL_UART_Transmit()`.
-- USB TX responses use one static `COMM_TX_BUFFER_SIZE = 128` buffer and retry
-  while CDC is busy; no large TX queue is implemented.
-- Active transport is tracked as none / USB / UART. When the active link changes,
-  the transport marks a link-change flag so the protocol layer can reset parser
-  and frame transaction state.
-- If a USB packet does not fit in the ring, the packet is dropped as a whole,
-  overflow state is recorded, and future parser logic must resynchronize at the
-  next sync word.
-- Ring access uses a short critical section because USB receive can write from
-  interrupt context while the main loop or future parser reads.
-- `CommTransport_Poll()` refreshes UART DMA write position, debug/watch variables,
-  and pending USB TX state.
-
-APIs:
-
-```c
-void CommTransport_Init(void);
-void CommTransport_Poll(uint32_t now_ms);
-uint16_t CommTransport_WriteFromUsb(const uint8_t *data, uint16_t len);
-uint16_t CommTransport_Read(uint8_t *data, uint16_t max_len);
-uint16_t CommTransport_Send(const uint8_t *data, uint16_t len);
-void CommTransport_ClearRx(void);
-uint16_t CommTransport_GetRxUsed(void);
-uint8_t CommTransport_ConsumeOverflow(void);
-uint8_t CommTransport_ConsumeLinkChanged(void);
-CommTransportLink_t CommTransport_GetActiveLink(void);
-```
-
-Debug globals:
-
-```c
-comm_transport_rx_ring[256]
-comm_transport_watch_rx_write_index
-comm_transport_watch_rx_read_index
-comm_transport_watch_rx_used
-comm_transport_watch_rx_max_used
-comm_transport_watch_rx_overflow_pending
-comm_transport_watch_usb_packet_count
-comm_transport_watch_rx_total_bytes
-comm_transport_watch_rx_dropped_bytes
-comm_transport_watch_rx_overflow_count
-comm_transport_watch_active_link
-comm_transport_watch_link_changed
-comm_transport_watch_uart_dma_started
-comm_transport_watch_tx_state
-comm_transport_watch_uart_byte_count
-comm_transport_watch_link_switch_count
-comm_transport_watch_tx_packet_count
-comm_transport_watch_tx_busy_drop_count
-comm_transport_watch_tx_error_count
-```
-
-### 8. Communication Protocol Module
-
-Files added:
-
-- `Core/Inc/comm_protocol.h`
-- `Core/Src/comm_protocol.c`
-- `COMM_PROTOCOL.md`
-
-Behavior:
-
-- Implements the first USB/UART parser and frame transaction layer.
-- Packet format is:
-
-```text
-sync0 sync1 version type seq payload_len flags payload crc16
-```
-
-- Sync is `0x5A 0xA5`.
-- Version is `APP_COMM_PROTOCOL_VERSION = 1`.
-- CRC is CRC16-CCITT-FALSE over `version..payload`.
-- Parser state machine is implemented as:
-
-```text
-WAIT_SYNC0 -> WAIT_SYNC1 -> READ_HEADER -> READ_PAYLOAD -> READ_CRC0 -> READ_CRC1
-```
-
-- Implemented message types:
-  - `HELLO_REQ`
-  - `HELLO_RSP`
-  - `FRAME_BEGIN`
-  - `FRAME_RGB_CHUNK`
-  - `FRAME_COMMIT`
-  - `ALL_BLACK`
-  - `STATUS_REQ`
-  - `STATUS_RSP`
-  - `ERROR_RSP`
-- `uid_hash` is derived from the STM32 UID base address and returned in
-  `HELLO_RSP`; `role_id` is the compile-time `APP_ROLE_ID` physical PCB number,
-  valid range `1..20`.
-- A statically allocated staging RGB frame stores one uncommitted `8 x 48 x RGB`
-  logical frame, adding `1152 bytes` RAM.
-- One full frame currently uses 4 chunks. Each chunk carries 288 bytes =
-  two complete logical lanes.
-- Chunk mapping is lane-major:
-  - chunk 0 -> lanes 0..1 logical pixels 0..47,
-  - chunk 1 -> lanes 2..3 logical pixels 0..47,
-  - chunk 2 -> lanes 4..5 logical pixels 0..47,
-  - chunk 3 -> lanes 6..7 logical pixels 0..47.
-- On commit, firmware maps each logical pixel to two physical WS2812B pixels:
-  physical indices `2n` and `2n + 1`.
-- `FRAME_BEGIN` records frame ID, chunk count, WW/CW metadata, and optional
-  frame CRC32. The current first version stores but does not verify frame CRC32.
-- CRC-valid chunks write only into the staging frame and update `received_mask`.
-- `FRAME_COMMIT` succeeds only when frame ID matches, all four chunks are received,
-  no severe transaction error is active, and overcurrent fault is inactive.
-- Successful commit copies staging RGB into the WS2812 software frame, applies
-  WW/CW target levels, and triggers WS2812 output. If WS2812 DMA is busy, it
-  sets `pending_show` and sends the newest committed frame after DMA becomes idle.
-- `FRAME_COMMIT` always sends a response using message type `FRAME_COMMIT`.
-- `ALL_BLACK` discards any active frame transaction, calls `WhitePwm_Off()`, and
-  calls `WS2812_BSR_ForceBlack()`.
-- After host control starts, if no valid protocol packet is received for
-  `APP_COMM_LONG_TIMEOUT_MS = 10000`, output is forced black.
-- Overcurrent protection remains higher priority than protocol output.
-
-APIs:
-
-```c
-void CommProtocol_Init(void);
-void CommProtocol_Poll(uint32_t now_ms);
-void CommProtocol_OutputPoll(uint32_t now_ms);
-uint8_t CommProtocol_HasOutputControl(void);
-void CommProtocol_Reset(void);
-```
-
-Debug globals:
-
-```c
-comm_protocol_watch_parser_state
-comm_protocol_watch_host_control_active
-comm_protocol_watch_pending_show
-comm_protocol_watch_last_error
-comm_protocol_watch_frame_id
-comm_protocol_watch_received_mask
-comm_protocol_watch_uid_hash
-comm_protocol_watch_packet_count
-comm_protocol_watch_crc_error_count
-comm_protocol_watch_parser_error_count
-comm_protocol_watch_commit_count
-comm_protocol_watch_commit_error_count
-comm_protocol_watch_timeout_black_count
-comm_protocol_watch_last_valid_packet_ms
-comm_protocol_watch_frame_begin_ms
-comm_protocol_watch_last_chunk_ms
-comm_protocol_watch_commit_rx_ms
-comm_protocol_watch_apply_start_ms
-comm_protocol_watch_apply_done_ms
-comm_protocol_watch_show_request_ms
-comm_protocol_watch_show_start_ms
-comm_protocol_watch_commit_rsp_ms
-comm_protocol_watch_frame_rx_span_ms
-comm_protocol_watch_commit_to_rsp_ms
-```
-
-## ADC Current Protection Architecture
-
-This section records the implemented current-protection design constraints. Do
-not change thresholds, sampling method, or fault behavior until the user
-authorizes the specific implementation step.
-
-- ADC current sense input is PB0 / `ADC1_IN8`.
-- Current protection remains a cooperative polling task, not an interrupt or DMA
-  pipeline.
-- Default sample period is `APP_CURRENT_PROTECT_SAMPLE_MS = 5 ms`.
-- ADC conversion remains single-channel, software-triggered, and non-DMA unless
-  later bench testing shows polling is insufficient.
-- Filtering remains an IIR filter controlled by `APP_CURRENT_FILTER_SHIFT`.
-- Default electrical parameters:
-  - shunt: `APP_CURRENT_SENSE_SHUNT_UOHM = 500` micro-ohms,
-  - current sense gain: `APP_CURRENT_SENSE_GAIN = 50`,
-  - ADC reference: `APP_CURRENT_ADC_VREF_MV = 3300`,
-  - ADC max count: `APP_CURRENT_ADC_MAX_COUNTS = 4095`.
-- Default trip threshold:
-  - trip: `APP_CURRENT_PROTECT_TRIP_MA = 16000`.
-- Overcurrent is a latched fault. It is not released by current falling below a
-  lower threshold; only MCU reset/power cycle clears it.
-- Fault behavior:
-  - white PWM is forced to zero immediately and repeatedly while fault is active,
-  - WS2812 output is forced black on fault entry,
-  - WS2812 black frames continue to be sent whenever the WS2812 driver is idle,
-  - protocol or display frames must not override an active overcurrent fault.
-- Hardware threshold accuracy must be validated on the bench because the current
-  estimate depends on shunt value, amplifier gain, ADC reference, and layout
-  noise.
-
-## RC EXTI Input Architecture
-
-This section records the implemented RC EXTI input direction. Do not map RC state
-to lighting behavior until the user authorizes a separate control step.
-
-- RC physical mapping remains:
-  - `D0 = PB11`
-  - `D1 = PB10`
-  - `D2 = PB2`
-  - `D3 = PB1`
-- The RC input module uses external interrupts on rising and falling edges.
-- `.ioc`, generated `gpio.c`, and runtime `RemoteInput_Init()` are all aligned to
-  EXTI rising/falling input with pulldown.
-- Required interrupt lines:
-  - `EXTI1` for PB1 / D3,
-  - `EXTI2` for PB2 / D2,
-  - `EXTI15_10` for PB10 / D1 and PB11 / D0.
-- Current IRQ handlers are implemented in `stm32f1xx_it.c`, and the RC state
-  update is handled by `HAL_GPIO_EXTI_Callback()` in `remote_input.c`.
-- EXTI handlers are lightweight:
-  - sample or mark raw state,
-  - update edge counters or pending flags,
-  - record timestamp if needed,
-  - avoid debounce logic,
-  - avoid direct lighting output changes.
-- `RemoteInput_Poll(now_ms)` should continue to own debounce and stable-state
-  publication.
-- Debounce target remains `APP_RC_DEBOUNCE_MS = 5 ms`.
-- The module exposes a global/state API containing the four RC state values plus
-  optional debug/watch fields.
-- RC state is an input to higher-level control logic only. It must not be mapped
-  directly to white PWM or WS2812 pixels unless the user later defines that
-  behavior.
-- PB2 is BOOT1-related, so hardware must not force an invalid boot level at
-  reset.
-
-## Planned USB / UART Communication Architecture
-
-This section records the confirmed communication design and current first
-implementation status. Further protocol, buffering, or `.ioc` changes still need
-separate authorization.
-
-### Transport Ownership
-
-- USB CDC and UART share one protocol parser, frame transaction state machine,
-  and frame commit path.
-- Only one transport is active at a time.
-- Switching the active transport must clear:
-  - the shared RX ring,
-  - parser state,
-  - the current frame transaction.
-- This prevents partial packets from one link from contaminating the next link.
-- Current implementation tracks active link and resets parser/transaction on a
-  link-change flag.
-
-### USB CDC Layer
-
-- USB CDC is treated as a byte stream. One `CDC_Receive_FS()` callback is not a
-  complete protocol packet.
-- USB receive stage is implemented. `CDC_Receive_FS()` now only:
-  - copy `Buf[0..Len-1]` into the shared application RX ring,
-  - immediately re-arm USB receive,
-  - avoid protocol parsing,
-  - avoid direct lighting output updates.
-- Current CDC temporary buffer sizes are:
-
-```c
-#define APP_RX_DATA_SIZE  256
-#define APP_TX_DATA_SIZE  128
-```
-
-- The device sends only small responses such as `HELLO_RSP`, commit result,
-  `STATUS_RSP`, and `ERROR_RSP`.
-- `FRAME_COMMIT` success or failure must produce a response.
-- Per-chunk ACK is not required by default unless a debug stage explicitly needs it.
-- `CDC_Transmit_FS()` may return `USBD_BUSY`; TX code must handle this without
-  blocking lighting output.
-- Current USB TX handling uses one 128-byte static response buffer and drops a
-  new response if the previous response is still in flight.
-- `CDC_Control_FS()` now keeps a minimal line-coding state for host
-  `SET_LINE_CODING` / `GET_LINE_CODING` requests. The default reported line
-  coding is 921600 8N1.
-- `CDC_Transmit_FS()` now checks for null payloads and an unenumerated USB CDC
-  class handle before accessing `TxState`.
-
-### Shared RX Ring
-
-- The first version uses one statically allocated shared RX ring:
-
-```c
-#define COMM_RX_RING_SIZE  1024U
-```
-
-- USB writes received bytes into this ring by software copy.
-- UART RX DMA writes directly into this same ring; no separate UART raw DMA
-  buffer should be added in the first version.
-- The user confirmed this is acceptable because only USB or UART will be active
-  at one time.
-- The ring is intentionally static so it can be inspected directly during debug.
-- If the RX ring overflows, discard the current frame transaction and wait for
-  the next sync word to re-synchronize.
-
-Bandwidth estimate:
-
-- Per-controller logical protocol RGB frame size: `8 * 48 * 3 = 1152 bytes`.
-- The host owns any aggregate `32 x 96` or larger system layout and distributes
-  each controller's own `8 x 48` logical frame by device identity.
-- Firmware expands each logical pixel to two physical WS2812B LEDs.
-- With protocol overhead, estimate about `1250..1350 bytes/frame`.
-- At `60 fps`, input is about `75..81 KB/s`; a 1024-byte RX ring covers about
-  `12.6 ms`.
-- At `120 fps`, input is about `150..162 KB/s`; a 1024-byte RX ring covers about
-  `6.3 ms`.
-- Therefore `60 fps` is the guaranteed design target. `120 fps` is only a stress
-  estimate and requires the main loop to drain communication data very often.
-
-### UART Layer
-
-- UART uses the same protocol as USB.
-- USART1 is currently configured on PB6/PB7.
-- First UART baud target: `921600`.
-- If bench testing shows low loss/error rate, baud can be increased later.
-- UART RX must use DMA.
-- Preferred DMA mapping for USART1 RX is DMA1 Channel5, which does not conflict
-  with the current WS2812 DMA use of DMA1 Channels 1, 4, and 7.
-- UART TX should not use DMA in the first version because USART1 TX commonly
-  maps to DMA1 Channel4, which is already used by WS2812 TIM4_CH2.
-- At `921600` baud with 8N1 framing, effective throughput is about `92 KB/s`.
-  This is not enough for 60 fps full-frame RGB, so UART is a lower-frame-rate
-  backup/debug transport unless a higher baud is validated later.
-- Current implementation starts USART1 RX DMA1 Channel5 in circular mode from
-  `CommTransport_Init()` and overrides baud to `921600` at runtime. `.ioc` was
-  not modified for this.
-
-### Protocol And Frame Transaction
-
-- Protocol packets must have explicit boundaries and must not be raw RGB bytes.
-- Packet fields are implemented as:
-  - sync,
-  - version,
-  - type,
-  - packet sequence,
-  - payload length,
-  - flags,
-  - payload,
-  - CRC16.
-- Parser state machine implemented:
-
-```text
-WAIT_SYNC0 -> WAIT_SYNC1 -> READ_HEADER -> READ_PAYLOAD -> READ_CRC0 -> READ_CRC1 -> DISPATCH
-```
-
-- Parser checks:
-  - sync,
-  - payload length bounds,
-  - message type,
-  - CRC16,
-  - frame ID.
-- Errors must not corrupt the active frame. Uncommitted data can only affect the
-  back/staging frame.
-
-Confirmed message types:
-
-- `HELLO_REQ`
-- `HELLO_RSP`
-- `FRAME_BEGIN`
-- `FRAME_RGB_CHUNK`
-- `FRAME_COMMIT`
-- `ALL_BLACK`
-- `STATUS_REQ`
-- `STATUS_RSP`
-- `ERROR_RSP`
-
-Frame transaction rules:
-
-- `FRAME_BEGIN` starts a transaction and records frame ID, chunk count, optional
-  frame CRC32, and WW/CW frame metadata. Current implementation stores but does
-  not verify frame CRC32.
-- WW/CW white levels are stored as frame metadata and take effect only after a
-  successful `FRAME_COMMIT`.
-- Each RGB chunk is planned as 288 bytes, representing two complete logical lanes.
-- One full frame has 4 RGB chunks.
-- CRC-valid chunks are written to the back/staging frame at their target offset.
-- A `received_mask` tracks the 4 chunks.
-- `FRAME_COMMIT` is accepted only when frame ID matches, all chunks are received,
-  and no severe transaction error is active.
-- `COMM_PROTOCOL.md` is the host-facing protocol handoff document.
-
-### Frame Output And Timeout Policy
-
-- `FRAME_COMMIT` swaps active/back frame ownership and schedules WS2812 output.
-- If WS2812 DMA is busy at commit time, use the confirmed `pending_show`
-  strategy. The latest committed frame is shown after DMA completion.
-- The main loop scheduling may be changed later to remove or reduce the fixed
-  `HAL_Delay(1)` so communication draining is not delayed.
-- Short communication timeout keeps the last committed frame.
-- Long communication timeout outputs black. The initial long-time threshold is
-  `10 seconds`, configurable by macro later.
-- `ALL_BLACK` is a high-priority command.
-- Existing overcurrent protection behavior must be preserved.
-- Current implementation rejects `FRAME_COMMIT` while overcurrent fault is active.
-
-### Device Identity
-
-- `uid_hash` is derived from STM32 UID and returned in `HELLO_RSP`.
-- `role_id` is implemented as compile-time macro `APP_ROLE_ID`.
-- `APP_ROLE_ID` is the physical PCB number, valid range `1..20`.
-- The host must not rely on COM port order to identify multiple boards.
-
-## Host Debug Tool
-
-First host-side debug/control tool has been started under `host_tool/`.
-
-Current scope:
-
-- Python implementation, intended for quick protocol validation before the GUI.
-- `pyserial` is used for USB CDC virtual COM and UART COM access.
-- `PySide6` GUI debug panel has been added for manual bench control.
-- Host protocol packing/parsing mirrors the firmware protocol:
-  - sync `0x5A 0xA5`,
-  - protocol version `1`,
-  - CRC16-CCITT-FALSE,
-  - 4 RGB chunks per full frame,
-  - each RGB chunk carries 288 bytes / two complete logical lanes,
-  - lane-major `8 x 48` logical mapping.
-- Implemented CLI commands:
-
-```text
-python -m tools.scan_devices
-python -m tools.status COM5
-python -m tools.all_black COM5
-python -m tools.send_solid COM5 --rgb 255 0 0 --ww 0 --cw 0
-python -m tools.gui
-```
-
-Current files:
-
-- `host_tool/pixel_host/protocol.py`: packet format, frame chunking, response parsers.
-- `host_tool/pixel_host/serial_link.py`: serial port open/read/write/transaction layer.
-- `host_tool/pixel_host/device.py`: high-level device actions.
-- `host_tool/pixel_host/patterns.py`: simple test frame generation.
-- `host_tool/pixel_host/gui.py`: PySide6 debug GUI.
-- `host_tool/tools/*.py`: CLI entry points.
-- `host_tool/tests/test_protocol.py`: host-side protocol self-tests.
-- `host_tool/README.md`: install and command usage.
-
-Current GUI features:
-
-- GUI auto-connect is the primary connection workflow and runs in a background
-  thread so the Qt UI shows `Connecting...` instead of appearing unresponsive.
-- `APP_ROLE_ID` is the physical PCB number, valid range `1..20`.
-- GUI scans visible COM ports, sends HELLO, keeps valid boards, sorts them by
-  `role_id` ascending, and maps only the smallest four boards into active slots:
-  - sorted board 1 -> slot 1 -> output columns 1..8,
-  - sorted board 2 -> slot 2 -> output columns 9..16,
-  - sorted board 3 -> slot 3 -> output columns 17..24,
-  - sorted board 4 -> slot 4 -> output columns 25..32.
-- If more than four valid boards are connected, boards after the first four are
-  ignored and a log message is printed.
-- If fewer than four valid boards are connected, missing slots are shown in the
-  GUI, but connected slots remain usable.
-- GUI must show live slot status: slot number, role_id, COM port, uid_hash, and
-  connected/error/missing state. Normal four-board operation should be visible as
-  `4/4 connected`.
-- Channel test mode controls RGB lanes only. White PWM is a separate global
-  control.
-- Channel numbers are `1..32`:
-  - `slot = (channel - 1) / 8 + 1`,
-  - `lane = (channel - 1) % 8`.
-- Channel test is state-preserving. The GUI keeps a cached RGB frame for each
-  slot and each test operation changes only the selected channel/lane in that
-  cache. Previously set channels remain unchanged until explicitly overwritten.
-- Channel test sends the selected WW/CW levels to all connected slots because
-  white PWM is a global board-level control in the host UI. Each slot receives
-  its own cached RGB frame, so non-target channels are not forced black.
-- If a requested channel maps to a missing slot, the GUI logs an error and does
-  not affect other boards.
-- File playback mode and channel test mode are mutually exclusive.
-- File playback imports a valid `.pixelbin`, validates geometry, and loops the
-  file automatically until paused or stopped.
-- `.pixelbin` board slices map to slots 1..4, not directly to physical role IDs.
-- File playback errors for a missing/disconnected slot are logged at the bottom,
-  while other connected slots continue playing.
-- Playback controls include import, pause/resume, stop, and speed control. The
-  effective playback period is `1 / file_fps / speed`.
-- GUI playback should not rely on COM port order.
-- GUI high-rate playback should run outside the main Qt UI path where practical
-  so the UI remains responsive during multi-board sends.
-
-Windows autoplay runtime:
-
-- New entry point:
-
-```powershell
-cd host_tool
-powershell -ExecutionPolicy Bypass -File .\autoplay.ps1
-```
-
-- `autoplay.ps1` opens a console, enters `host_tool`, uses
-  `.venv\Scripts\python.exe` when present, and repeatedly runs:
-
-```powershell
-python -m tools.autoplay
-```
-
-- `install_autostart.ps1` creates a current-user Windows Startup shortcut to
-  `autoplay.ps1`; `uninstall_autostart.ps1` removes that shortcut.
-- Fixed playback files are expected under `host_tool\autoplay\`:
-
-```text
-mode1.pixelbin
-mode2.pixelbin
-mode3.pixelbin
-mode4.pixelbin
-```
-
-- Startup flow:
-  - scan visible USB CDC COM ports,
-  - send HELLO and keep boards with valid `role_id` in range `1..20`,
-  - map connected boards by `role_id` ascending to slot 1..4,
-  - wait until four controllers are connected,
-  - while waiting, poll connected boards with `STATUS_REQ`,
-  - if any connected board reports nonzero `rc_stable_bits`, stop waiting for
-    missing boards and force playback immediately.
-- RC mapping:
-  - bit0 -> `mode1.pixelbin`,
-  - bit1 -> `mode2.pixelbin`,
-  - bit2 -> `mode3.pixelbin`,
-  - bit3 -> `mode4.pixelbin`.
-- During playback, RC status is polled periodically and mode switches take
-  effect at frame boundaries.
-- Missing or failed boards are logged and skipped; other boards continue.
-- If playback is forced by RC before all boards are present, the first version
-  cannot know which absent physical role should occupy which slot unless a
-  fixed role map is provided later. It therefore compactly maps currently
-  connected boards by ascending `role_id` and logs this as a forced partial
-  mapping.
-- This first version does not change firmware protocol. It uses the existing
-  `STATUS_RSP.rc_stable_bits` field. If the RC receiver is pulse-like and the
-  pulse is shorter than the host polling interval, add a firmware-side
-  `rc_changed_bits` or RC event counter later.
-
-Validation performed:
-
-```text
-python -m compileall host_tool
-protocol self-tests passed
-```
-
-Closed-loop throughput validation on USB CDC virtual COM:
-
-- The first stable host implementation used `read(64)` with a 50 ms serial
-  timeout. Because commit responses are short packets, pyserial often waited for
-  timeout before returning a partial read.
-- After changing `SerialLink.read_packet()` to read `in_waiting` bytes, or block
-  for only one byte when none are available, commit response wait dropped from
-  about `57..62 ms` to about `6.1..6.6 ms`.
-- Firmware timing probes measured a successful frame as:
-  - `frame_rx_span_ms = 44`,
-  - `commit_to_rsp_ms = 5`.
-  This showed firmware commit latency was not the main bottleneck.
-- Before reducing the protocol to 48 logical pixels per lane, stress testing
-  with full `8 x 96` logical RGB frames and one commit response per frame found
-  the previous stable chunk pacing boundary:
-
-```text
-2.00 ms: stable, 0 error
-1.75 ms: stable, 0 error
-1.60 ms: stable, 0 error, actual about 23 fps
-1.50 ms: unstable, commit/error count increases
-1.25 ms: clearly unstable
-1.00 ms and below: timeout or severe errors
-```
-
-- After reducing the protocol to `8 x 48` logical pixels, HELLO initially
-  reported `leds_per_lane = 48`, `chunk_count = 8`, and successful full-frame
-  commits returned `received_mask = 0x00ff`.
-- Bench stress results for `8 x 48` logical full-frame closed-loop streaming:
-
-```text
-2.00 ms: stable, actual about 34.2 fps, 0 error
-1.75 ms: stable, actual about 36.9 fps, 0 error
-1.60 ms: near edge, commit_err=1, error_delta=5
-1.50 ms: unstable, commit_err=1, error_delta=7
-1.25 ms: clearly unstable, commit_err=128, error_delta=852
-1.00 ms and below: timeout or severe errors
-```
-
-- The previous 2-chunk protocol used `chunk_rgb_bytes = 576` and
-  `received_mask = 0x0003`. It was stable in direct single-board tests at about
-  60 fps, but USB Hub multi-board playback still produced RX overflow even with
-  GUI chunk delay around `0.5 ms`.
-- The current protocol keeps the same `8 x 48` logical frame but splits it into
-  4 smaller chunks, with `chunk_rgb_bytes = 288`, `COMM_RX_RING_SIZE = 1536`,
-  and successful commits returning `received_mask = 0x000f`.
-- This 4-chunk change does not increase firmware frame RAM; it only adds two
-  extra protocol packets per frame and reduces each USB OUT burst.
-- Current heap was reduced from `0x200` to `0x80` to make room for the 1536-byte
-  RX ring while keeping stack at `0x400`.
-
-- Current GUI defaults are therefore:
-  - default chunk delay: `0.25 ms`,
-  - default breath target: `60 fps`.
-- This is the current validated closed-loop bench-control setting.
-
-Current limitations:
-
-- No persistent multi-board role mapping beyond the example JSON file.
-- Current live GUI stream is closed-loop and waits for a commit response per
-  frame; the current 4-chunk protocol is the validated USB Hub multi-board
-  setting.
-- `host_tool/setup_host_env.ps1` exists for dependency installation on a new PC,
-  but Codex has not run it locally unless the user explicitly authorizes that.
-- GUI operations are currently synchronous and intended for bench debug, not
-  high-rate streaming.
-
-## Host Offline Video Generator
-
-The host tool now includes a separate offline generator for occasionally
-preparing `.pixelbin` playback files from local video. It is intentionally not
-integrated into live playback or device communication.
-
-Entry point:
-
-```powershell
-cd host_tool
-python -m tools.generator_gui
-```
-
-Deployment helper for a new Windows PC:
+第一次在 Windows 电脑上部署：
 
 ```powershell
 cd host_tool
@@ -973,193 +65,368 @@ powershell -ExecutionPolicy Bypass -File .\setup_host_env.ps1
 .\.venv\Scripts\activate
 ```
 
-Files:
+依赖在 `host_tool/requirements.txt` 中，主要包括：
 
-- `host_tool/pixel_host/video_generator.py`: OpenCV-based video conversion core.
-- `host_tool/pixel_host/generator_gui.py`: standalone PySide6 generator GUI.
-- `host_tool/tools/generator_gui.py`: launcher.
-- `host_tool/setup_host_env.ps1`: creates `.venv` and installs dependencies.
+- `pyserial`：USB CDC / 串口通信。
+- `PySide6`：GUI。
+- `opencv-python`：视频输入。
+- `Pillow`：GIF 输入。
 
-Dependencies:
+## 下位机常用操作
 
-- `pyserial` for communication tools.
-- `PySide6` for the existing debug GUI and the offline generator GUI.
-- `opencv-python` for video decoding and image processing.
-- `Pillow` for animated GIF input.
+### 修改板号
 
-Generator behavior:
-
-- Reads local video with OpenCV.
-- Reads animated GIF input with Pillow.
-- Samples frames at the selected output FPS, default `60`.
-- Uses a center crop to match the logical display aspect ratio `2:3`.
-- Resizes the cropped frame to `32 x 48`.
-- Optional simple image adjustment:
-  - brightness multiplier,
-  - gamma,
-  - saturation multiplier.
-- Writes the existing `.pixelbin` format with global fixed `WW/CW` levels.
-- Can also write an optional preview MP4. The preview MP4 is generated from the
-  same processed `32 x 48` logical RGB frames as the `.pixelbin`, then enlarged
-  to `320 x 480` using nearest-neighbor scaling so the pixel layout remains
-  visible.
-- GIF input is converted once through the GIF's own timeline. It is not looped
-  automatically during file generation.
-
-Current logical mapping for generated files:
-
-```text
-x = 0..31, left to right
-y = 0..47, top to bottom in the source/video
-slot_id = x / 8 + 1
-lane    = x % 8
-pixel   = 47 - y
-```
-
-Each lane is physically wired from bottom to top:
-
-```text
-left slot/lane bottom pixel -> same lane top pixel
-```
-
-The source/video coordinate system still uses normal top-to-bottom rows. The
-host flips `y` inside each lane before writing board-major frame data, so this
-does not change the firmware protocol or the lane-major frame format. There is
-currently no serpentine mapping, reverse-lane feature, per-board rotation, or
-geometric correction. Add those only after the user explicitly defines the
-needed wiring variants.
-
-## Main Integration
-
-`Core/Src/main.c` was modified only inside USER CODE sections:
-
-- Includes:
+每块板烧录前修改：
 
 ```c
-#include "app_controller.h"
+#define APP_ROLE_ID  10U
 ```
 
-- Init section:
+位置：`Core/Inc/app_config.h`
+
+有效范围目前按 `1..20` 使用。上位机多板自动连接时按 `role_id` 升序映射，最小四块板对应输出 slot1..4。
+
+### 常用功能开关
+
+位置：`Core/Inc/app_config.h`
 
 ```c
-AppController_Init();
+#define APP_ENABLE_REMOTE_INPUT      1U
+#define APP_WS2812_ACTIVE_LANES      8U
+#define APP_ENABLE_CURRENT_MONITOR   0U
+#define APP_ENABLE_CURRENT_PROTECT   0U
+#define APP_ENABLE_CAN               0U
+#define APP_USB_ONLY_BRINGUP         0U
 ```
 
-- Main loop USER CODE section:
+当前状态：
+
+- RC 输入已打开。
+- WS2812 8 路输出已打开。
+- 检流监测和过流保护当前关闭，因为 ADC 接入和阈值还没有完成实机验证。
+- CAN 当前关闭，不参与 USB IRQ 或工程功能。
+- USB-only bring-up 模式关闭，正常运行完整应用。
+
+### 白光 PWM 参数
+
+位置：`Core/Inc/app_config.h`
 
 ```c
-AppController_Poll(HAL_GetTick());
-HAL_Delay(1);
+#define APP_WHITE_PWM_MAX_LEVEL  1000U
+#define APP_WHITE_PWM_STEP_MS    2U
+#define APP_WHITE_PWM_STEP       5U
+#define APP_WHITE_PWM_TIM1_ARR   3599U
 ```
 
-## Keil Project Integration
+当前白光通道：
 
-`MDK-ARM\PIXEL_LIGHT.uvprojx` was modified to include:
+- WW：TIM1 CH1 / PA8
+- CW：TIM1 CH2 / PA9
+- 目标 PWM 频率约 20 kHz。
+- 上位机协议中 WW/CW 是全局板级参数，随 `FRAME_COMMIT` 生效。
 
-- `../Core/Src/ws2812_bsr_dma.c`
-- `../Core/Src/remote_input.c`
-- `../Core/Src/white_pwm.c`
-- `../Core/Src/current_protect.c`
-- `../Core/Src/app_controller.c`
-- `../Core/Src/comm_transport.c`
-- `../Core/Src/comm_protocol.c`
+### WS2812 输出
 
-## IOC Changes Made
+- 单板物理输出：8 路，每路 48 个小板，每小板 2 颗串接 WS2812B。
+- 协议逻辑输出：每板 `8 x 48` RGB 逻辑像素。
+- 固件展开：每个逻辑像素复制到同一小板上的 2 颗物理 WS2812。
+- BSRR 输出引脚：PA0..PA7 对应 CH1..CH8。
+- 主工程中当前启用 8 路。
 
-ADC1 current sense input was changed in `pixel_light.ioc` after user approval:
+## 上位机常用操作
+
+所有命令默认在 `host_tool` 目录运行。
+
+### 扫描设备
+
+```powershell
+python -m tools.scan_devices
+```
+
+### 查看单板状态
+
+```powershell
+python -m tools.status COM15
+```
+
+关注字段：
+
+- `role_id`：板号。
+- `rc_bits`：RC 四路稳定状态。
+- `rc_events`：RC 四路按下事件，STATUS 返回后清除。
+- `rx_used`、`error_count`：通信压力/溢出线索。
+- `commit_count`：成功 commit 次数。
+
+### 单板发纯色
+
+```powershell
+python -m tools.send_solid COM15 --rgb 255 0 0 --ww 0 --cw 0
+```
+
+### 打开调试 GUI
+
+```powershell
+python -m tools.gui
+```
+
+GUI 当前用途：
+
+- 自动扫描并连接多块板。
+- 按 `role_id` 升序映射到 slot。
+- 单通道 RGB 测试，通道 1..32 从左到右递增。
+- 文件播放 `.pixelbin`。
+- 白光 WW/CW 全局控制。
+- RC / Mode 四键调试：`Mode 1`、`Mode 2`、`Black`、`Pause`。
+
+GUI 四键调试逻辑：
+
+- GUI 会轮询已连接下位机的 `STATUS_RSP.rc_event_bits`。
+- 任意下位机上报 bit0/bit1/bit2/bit3 时，GUI 对应按钮高亮并触发同一动作。
+- 在 GUI 中手动点击未高亮按钮，也等价于触发该动作。
+- 再次点击当前已高亮动作无效，避免重复重启播放。
+- `Mode 1` 循环播放 `host_tool\autoplay\mode1.pixelbin`。
+- `Mode 2` 循环播放 `host_tool\autoplay\mode2.pixelbin`。
+- `Black` 循环播放 `host_tool\autoplay\black.pixelbin`。
+- `Pause` 停止继续提交 RGB 帧，保持当前输出。
+- GUI 内部对每块板使用串口 `io_lock`，避免播放发帧和 STATUS 轮询同时抢同一个 CDC 响应。
+
+当前仓库本地已生成三个占位 demo 文件：
 
 ```text
-ADC1.Channel-0\#ChannelRegularConversion=ADC_CHANNEL_8
-ADC1.SamplingTime-0\#ChannelRegularConversion=ADC_SAMPLETIME_55CYCLES_5
-Mcu.PinsNb=33
+host_tool\autoplay\mode1.pixelbin
+host_tool\autoplay\mode2.pixelbin
+host_tool\autoplay\black.pixelbin
 ```
 
-The previous internal temperature sensor virtual input `VP_ADC1_TempSens_Input` was removed. `PB0.Signal=ADCx_IN8` and `SH.ADCx_IN8.0=ADC1_IN8,IN8` remain in the IOC.
+这些 `.pixelbin` 文件被 `.gitignore` 忽略，只用于本地联调，不进入 git 提交。
 
-Current generated `Core/Src/adc.c` also configures `ADC_CHANNEL_8` with `ADC_SAMPLETIME_55CYCLES_5`.
+### 生成测试灯效文件
 
-Only `.ioc` white PWM timing was changed after user approval:
+```powershell
+python -m tools.generate_test_file --output test.pixelbin --pattern breath --frames 240 --fps 60
+```
+
+### 视频/GIF 转灯效
+
+```powershell
+python -m tools.generator_gui
+```
+
+生成器输入：
+
+- MP4/AVI/MOV/MKV/WMV 等视频。
+- GIF。
+
+生成器输出：
+
+- `.pixelbin` 播放文件。
+- 可选预览 MP4。
+
+当前坐标映射：
 
 ```text
-TIM1.Prescaler=0
-TIM1.Period=3599
-TIM1.IPParameters=Channel-PWM Generation1 CH1,Channel-PWM Generation2 CH2,Prescaler,Period
+x = 0..31，从左到右
+y = 0..47，源视频/逻辑画面从上到下
+slot = x / 8 + 1
+lane = x % 8
+pixel = 47 - y
 ```
 
-This targets about 20 kHz PWM at 72 MHz TIM1 clock:
+原因：实际灯条每个 CH 从下往上串接，所以 host 在每条 lane 内做 `y` 翻转。
+
+### Windows 自启播放
+
+固定灯效文件放在：
 
 ```text
-72 MHz / (0 + 1) / (3599 + 1) = 20 kHz
+host_tool\autoplay\mode1.pixelbin
+host_tool\autoplay\mode2.pixelbin
+host_tool\autoplay\black.pixelbin
 ```
 
-Important: `tim.c` is still generated code. After this `.ioc` change, the user must regenerate with CubeMX for generated `MX_TIM1_Init()` to actually use ARR 3599. Do not manually edit `tim.c` generated area.
+手动运行：
 
-RC input pins were also aligned in `pixel_light.ioc` after user authorization:
-
-```text
-PB11 / RC_D0 = GPIO_EXTI11, GPIO_PULLDOWN, rising/falling
-PB10 / RC_D1 = GPIO_EXTI10, GPIO_PULLDOWN, rising/falling
-PB2  / RC_D2 = GPIO_EXTI2,  GPIO_PULLDOWN, rising/falling
-PB1  / RC_D3 = GPIO_EXTI1,  GPIO_PULLDOWN, rising/falling
+```powershell
+cd host_tool
+powershell -ExecutionPolicy Bypass -File .\autoplay.ps1
 ```
 
-Generated `Core/Src/gpio.c` is now also aligned to configure these four pins as
-EXTI rising/falling inputs with pulldown. `RemoteInput_Init()` still repeats the
-same configuration at runtime for robustness.
+安装开机自启：
 
-## Last Build Status
-
-A Keil command-line build was run after user authorization while validating the
-ADC reset-latched overcurrent behavior, RC EXTI input migration, and CDC buffer
-shrink.
-
-Current result:
-
-```text
-0 Error(s), 0 Warning(s)
-Program Size: Code=26944 RO-data=376 RW-data=728 ZI-data=19592
-Total RW Size: 20320 bytes
-RW_IRAM1: 0x4f60 / 0x5000
-RAM remaining: 160 bytes
+```powershell
+cd host_tool
+powershell -ExecutionPolicy Bypass -File .\install_autostart.ps1
 ```
 
-The build passes, but RAM margin is extremely small. The current design keeps
-both `ws2812_frame[2304]` and `comm_protocol_staging_frame[1152]` as approved.
-If later features add more global/static RAM, revisit heap/stack sizing, USB
-descriptor buffer size, or the frame-staging strategy.
+卸载开机自启：
 
-## Known Checks / Potential Issues For Next Agent
-
-1. Do not use or modify `graduation\bsrr_test`; it was the earlier wrong target.
-2. Do not run local compiler unless user explicitly asks.
-3. If checking source consistency without compiling:
-   - Verify `app_config.h` still contains white PWM macros.
-   - Verify `white_pwm.c` contains:
-     ```c
-     #define WHITE_PWM_WW_TIM_CHANNEL  TIM_CHANNEL_1
-     #define WHITE_PWM_CW_TIM_CHANNEL  TIM_CHANNEL_2
-     ```
-   - Verify `.ioc` TIM1 fields are on separate lines, not concatenated.
-4. `.ioc` has TIM1 20 kHz settings and current `Core/Src/tim.c` already shows `htim1.Init.Period = 3599`.
-5. Current protection is implemented, but hardware thresholds should still be validated on the bench because the calculation assumes 0.5 mOhm shunt, 50x gain, and 3.3 V ADC reference.
-6. WS2812 fault handling now uses `WS2812_BSR_ForceBlack()` on fault entry, then retransmits an all-black frame whenever idle.
-7. USB/UART protocol code now compiles in Keil with 0 errors and 0 warnings, but
-   it still needs bench/host-side communication testing.
-8. UART RX DMA writes directly into the shared 1024-byte RX ring. This relies on
-   the confirmed hardware usage that only USB or UART is active at one time.
-9. The first protocol implementation stores `frame_crc32` from `FRAME_BEGIN` but
-   does not verify it yet; packet-level CRC16 is implemented.
-
-## Suggested Commit Message For Current Source State
-
-```text
-add ws2812 bsrr driver, rc input, white pwm, and current protection
-
-- add TIM4/DMA GPIOA BSRR WS2812 test driver
-- add RC_D0-D3 input state/debounce module
-- add TIM1 CH1/CH2 WW/CW white PWM control with smoothing
-- add ADC1_IN8 current protection with filtered 16A reset-latched trip
-- add app controller scheduler for application-level polling and fault handling
-- hook modules through main USER CODE sections
-- set TIM1 PWM target to 20 kHz in ioc
+```powershell
+cd host_tool
+powershell -ExecutionPolicy Bypass -File .\uninstall_autostart.ps1
 ```
+
+自启逻辑：
+
+- 开机打开控制台。
+- 反复扫描 USB CDC 设备并 HELLO。
+- 默认等待 4 块控制器全部连接。
+- 等待期间轮询已连接板的 `STATUS_RSP.rc_event_bits`。
+- 如果任意 RC 指令出现，立刻进入对应模式，不再等待缺失板。
+- bit0 对应 `mode1.pixelbin`。
+- bit1 对应 `mode2.pixelbin`。
+- bit2 对应 `black.pixelbin`，即播放预存全黑视频。
+- bit3 对应暂停，暂停时停止继续提交 RGB 帧，保持当前输出。
+- 再次单击当前动作无效；单击其他动作立即切换。
+- 播放期间继续轮询 RC，按键切换模式。
+- 单板异常只打印 log 并跳过，不阻塞其他板。
+
+## 当前测试进度
+
+### 已验证
+
+- Keil 工程曾在当前功能集下编译通过，最近一次用户反馈大小：
+  `Code=25704 RO-data=360 RW-data=780 ZI-data=19684`，0 errors。
+- USB CDC 枚举问题最终确认曾由硬件连锡导致；硬件修复后 USB 可正常通信。
+- BSRR 驱动 WS2812 已能正常输出，前期验证过旧板前 4 路，新板恢复 8 路后可继续测试。
+- 白光 PWM 通道基本功能已验证可输出。
+- 上位机 CLI 可 HELLO、STATUS、SOLID、ALL_BLACK、发帧。
+- GUI 自动识别多设备已验证可用。
+- GUI 四键调试已基本可用：下位机 RC 事件可映射到 GUI 高亮和模式触发，GUI 手动按钮也可触发对应动作。
+- USB Hub 多板通信曾出现 RX overflow，改为 4 chunk 后用户测试暂时解决。
+- 48 逻辑像素/通道、4 chunk、约 60 fps 的 host 发送压力测试结果明显优于旧 2 chunk/8 chunk 方案。
+- 视频/GIF 生成 `.pixelbin`、预览 MP4 功能已实现并做过语法级检查。
+- Windows autoplay 第一版已实现并做过 `py_compile` 与 `--help` 检查。
+
+### 未充分验证
+
+- Windows 开机自启实机流程：从系统登录、设备枚举、等待 4 板、RC 强制切入、循环播放，还需要完整跑一遍。
+- RC 接收机实机输出：当前固件会上报 `rc_event_bits` 按下事件，但仍需实机确认四个输入的电平、去抖和按键映射。
+- ADC 检流和过流保护：代码存在，但当前宏关闭，实际阈值、接线和保护行为未完成验证。
+- 白光通道在最终实负载上的温升、电流、频闪和 PWM 极性仍需确认。
+- 4 块板经同一个 USB Hub 长时间 60 fps 播放稳定性还需要长时间测试。
+- 上电顺序、USB Hub 识别延迟、Windows COM 号变化对 autoplay 的影响需要实机观察。
+
+## 下一步优先验收
+
+1. 下位机基础输出
+   - 8 路 WS2812 是否都按 CH1..CH8 正确输出。
+   - 每路上下方向是否与 `pixel = 47 - y` 匹配。
+   - WW/CW 白光是否受上位机全局值控制。
+
+2. 多板映射
+   - 给 4 块板烧不同 `APP_ROLE_ID`。
+   - GUI 自动连接后确认 role_id 升序对应 slot1..4。
+   - 通道 1..32 逐列测试，确认物理顺序为从左到右。
+
+3. `.pixelbin` 播放
+   - 用 generator 生成简单方向性图案。
+   - GUI 文件播放确认画面方向和板间拼接。
+   - 用 `tools.autoplay` 播放 `mode1`、`mode2` 和 `black`。
+
+4. RC 自启切换
+   - 只接带 RC 的板和部分控制器，按键确认能强制进入对应模式。
+   - 接齐 4 板，不按键确认默认进入 mode1。
+   - 播放中按 bit0..bit3 确认模式切换。
+
+5. 长时间稳定性
+   - 4 板同 Hub 连续播放 30 分钟以上。
+   - 观察 host log 中 err/skip 是否增长。
+   - 必要时调大 `--chunk-delay-ms` 或降低文件 FPS。
+
+6. 保护功能
+   - ADC 接线确认后再打开 `APP_ENABLE_CURRENT_MONITOR`。
+   - 校准电流读数。
+   - 最后打开 `APP_ENABLE_CURRENT_PROTECT`，验证白光立即归零、WS2812 持续黑帧、只能复位恢复。
+
+## 常调参数
+
+### 下位机 `Core/Inc/app_config.h`
+
+- `APP_ROLE_ID`：板号，1..20。
+- `APP_WS2812_ACTIVE_LANES`：启用 WS2812 输出路数，正常新板为 8。
+- `APP_ENABLE_REMOTE_INPUT`：RC 输入。
+- `APP_ENABLE_CURRENT_MONITOR`：是否采样电流。
+- `APP_ENABLE_CURRENT_PROTECT`：是否启用过流锁死保护。
+- `APP_CURRENT_PROTECT_TRIP_MA`：过流阈值。
+- `APP_COMM_LONG_TIMEOUT_MS`：上位机长时间无包后的黑屏阈值。
+- `APP_WHITE_PWM_STEP_MS` / `APP_WHITE_PWM_STEP`：白光平滑速度。
+
+### 上位机协议 `host_tool/pixel_host/protocol.py`
+
+- `LEDS_PER_LANE = 48`
+- `LANES = 8`
+- `LANES_PER_CHUNK = 2`
+- `FRAME_CHUNKS = 4`
+- `MAX_PAYLOAD = 640`
+
+这些参数必须和下位机 `comm_protocol.c` 保持一致。
+
+### 自启播放
+
+- `host_tool/autoplay.ps1`
+  - `$ModeDir`
+  - `$ChunkDelayMs`
+  - `$RcPollInterval`
+- `host_tool/tools/autoplay.py`
+  - `--boards`
+  - `--scan-interval`
+  - `--rc-poll-interval`
+  - `--chunk-delay-ms`
+  - `--fps`
+
+### 灯效生成
+
+- 输出 FPS：通常 60。
+- 画面裁剪：中心裁剪到 2:3。
+- 输出尺寸：32 x 48。
+- 亮度、gamma、饱和度：在 generator GUI 中调整。
+- WW/CW：当前作为全局固定值写入 `.pixelbin`。
+
+## 常见问题
+
+### USB 设备管理器能看到但无法通信
+
+- 确认不是硬件 D+/D-、上拉、电源或连锡问题。
+- 确认 CAN 关闭，避免影响 USB 相关中断路径。
+- 用 `python -m tools.scan_devices` 看是否 HELLO。
+- 如果 Windows 分配了 COM 口但打开失败，先拔插、更换 USB 口或 Hub。
+
+### 多板经 Hub 播放偶发 timeout / overflow
+
+- 先看下位机调试变量：RX overflow、parser error、dropped bytes。
+- 当前 4 chunk 方案是为 Hub burst 问题做的缓解。
+- 可以尝试增大 host 的 `--chunk-delay-ms`，例如 0.25 -> 0.5。
+- 若仍不稳，降低 `.pixelbin` FPS 或继续做 host 调度优化。
+
+### 画面上下颠倒
+
+- 当前物理灯条每 CH 从下往上串接。
+- host 已在 `display_mapping.py` 使用 `pixel = 47 - y`。
+- 如果现场接线再变化，优先修改 `host_tool/pixel_host/display_mapping.py`。
+
+### 通道位置不对
+
+- 确认 4 块板 `APP_ROLE_ID`。
+- 上位机按 role_id 升序取最小 4 块，映射到 slot1..4。
+- slot1 对应 CH1..8，slot2 对应 CH9..16，slot3 对应 CH17..24，slot4 对应 CH25..32。
+
+### 自启播放没有开始
+
+- 检查 `host_tool\autoplay\mode1.pixelbin` 等文件是否存在。
+- 手动运行 `powershell -ExecutionPolicy Bypass -File .\autoplay.ps1` 看 log。
+- 确认 Python 虚拟环境已安装：`setup_host_env.ps1`。
+- 确认下位机 USB 能 HELLO。
+
+### RC 按键偶尔漏触发
+
+- 当前 host 轮询 `STATUS_RSP.rc_event_bits`。
+- 如果按键没有响应，先用 `python -m tools.status COMx` 看 `rc_events` 是否出现。
+- 若 `rc_bits` 变化但 `rc_events` 不出现，检查 RC 去抖和固件版本。
+
+## 修改原则
+
+- 改 `.ioc` 前必须明确授权，改完由用户重新生成代码并检查。
+- Cube 生成文件尽量只改 USER CODE 区。
+- 新功能优先放在应用层模块，不把业务逻辑塞进生成代码。
+- 不要提交 `.pixelbin`、预览 MP4、`.venv`、Keil 输出目录。
+- 大改前先同步 `SYSTEM_ARCHITECTURE.md` 的方案，实际使用说明同步本文件。

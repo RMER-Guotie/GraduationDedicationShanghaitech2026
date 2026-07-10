@@ -77,6 +77,7 @@ volatile uint32_t comm_protocol_watch_show_start_ms;
 volatile uint32_t comm_protocol_watch_commit_rsp_ms;
 volatile uint32_t comm_protocol_watch_frame_rx_span_ms;
 volatile uint32_t comm_protocol_watch_commit_to_rsp_ms;
+volatile uint8_t comm_protocol_watch_rc_event_bits;
 
 /* Packet parser scratch buffers; payload is bounded by COMM_PROTOCOL_MAX_PAYLOAD. */
 static CommProtocolParserState_t comm_protocol_parser_state;
@@ -104,6 +105,7 @@ static uint32_t comm_protocol_commit_count;
 static uint32_t comm_protocol_commit_error_count;
 static uint32_t comm_protocol_timeout_black_count;
 static uint32_t comm_protocol_last_valid_packet_ms;
+static uint8_t comm_protocol_rc_event_bits;
 
 static void CommProtocol_ResetParser(void);
 static void CommProtocol_ResetTransaction(void);
@@ -118,11 +120,12 @@ static void CommProtocol_HandleAllBlack(void);
 static void CommProtocol_ApplyCommittedFrame(void);
 static void CommProtocol_RequestShow(void);
 static void CommProtocol_ForceBlackOutput(void);
+static void CommProtocol_CaptureRcEvents(void);
 static void CommProtocol_SendHelloResponse(uint16_t seq);
 static void CommProtocol_SendStatusResponse(uint16_t seq);
 static void CommProtocol_SendCommitResponse(uint16_t seq, uint16_t frame_id, uint8_t status);
 static void CommProtocol_SendError(uint16_t seq, uint8_t code, uint16_t detail);
-static void CommProtocol_SendPacket(uint8_t type, uint16_t seq, uint8_t flags, const uint8_t *payload, uint16_t payload_len);
+static uint16_t CommProtocol_SendPacket(uint8_t type, uint16_t seq, uint8_t flags, const uint8_t *payload, uint16_t payload_len);
 static uint16_t CommProtocol_CalcCrc(const uint8_t *data, uint16_t len);
 static uint16_t CommProtocol_Crc16Update(uint16_t crc, uint8_t data);
 static uint16_t CommProtocol_ReadU16(const uint8_t *data);
@@ -147,6 +150,7 @@ void CommProtocol_Init(void)
   comm_protocol_commit_error_count = 0U;
   comm_protocol_timeout_black_count = 0U;
   comm_protocol_last_valid_packet_ms = 0U;
+  comm_protocol_rc_event_bits = 0U;
   memset(comm_protocol_staging_frame, 0, sizeof(comm_protocol_staging_frame));
   CommProtocol_ResetParser();
   CommProtocol_ResetTransaction();
@@ -156,6 +160,11 @@ void CommProtocol_Init(void)
 void CommProtocol_Poll(uint32_t now_ms)
 {
   uint8_t byte;
+
+  if (comm_protocol_host_control_active != 0U)
+  {
+    CommProtocol_CaptureRcEvents();
+  }
 
   /* Transport errors invalidate the current packet and uncommitted frame. */
   if (CommTransport_ConsumeLinkChanged() != 0U)
@@ -662,6 +671,13 @@ static void CommProtocol_ForceBlackOutput(void)
   WS2812_BSR_ForceBlack();
 }
 
+static void CommProtocol_CaptureRcEvents(void)
+{
+  uint8_t pressed_bits = RemoteInput_ConsumePressedBits();
+
+  comm_protocol_rc_event_bits = (uint8_t)((comm_protocol_rc_event_bits | pressed_bits) & 0x0FU);
+}
+
 static void CommProtocol_SendHelloResponse(uint16_t seq)
 {
   uint8_t payload[18];
@@ -684,6 +700,7 @@ static void CommProtocol_SendHelloResponse(uint16_t seq)
 static void CommProtocol_SendStatusResponse(uint16_t seq)
 {
   uint8_t payload[36];
+  uint8_t reported_rc_events;
   uint16_t flags = 0U;
   uint16_t offset = 0U;
 
@@ -711,6 +728,9 @@ static void CommProtocol_SendStatusResponse(uint16_t seq)
   offset++;
   payload[offset] = RemoteInput_GetStableBits();
   offset++;
+  reported_rc_events = comm_protocol_rc_event_bits;
+  payload[offset] = reported_rc_events;
+  offset++;
   CommProtocol_WriteU16(&payload[offset], CommTransport_GetRxUsed());
   offset = (uint16_t)(offset + 2U);
   CommProtocol_WriteU16(&payload[offset], comm_protocol_transaction.frame_id);
@@ -732,7 +752,10 @@ static void CommProtocol_SendStatusResponse(uint16_t seq)
   CommProtocol_WriteU32(&payload[offset], comm_protocol_commit_count);
   offset = (uint16_t)(offset + 4U);
 
-  CommProtocol_SendPacket(COMM_MSG_STATUS_RSP, seq, 0U, payload, offset);
+  if (CommProtocol_SendPacket(COMM_MSG_STATUS_RSP, seq, 0U, payload, offset) != 0U)
+  {
+    comm_protocol_rc_event_bits = (uint8_t)(comm_protocol_rc_event_bits & (uint8_t)(~reported_rc_events));
+  }
 }
 
 static void CommProtocol_SendCommitResponse(uint16_t seq, uint16_t frame_id, uint8_t status)
@@ -755,7 +778,7 @@ static void CommProtocol_SendError(uint16_t seq, uint8_t code, uint16_t detail)
   CommProtocol_SendPacket(COMM_MSG_ERROR_RSP, seq, 0U, payload, sizeof(payload));
 }
 
-static void CommProtocol_SendPacket(uint8_t type, uint16_t seq, uint8_t flags, const uint8_t *payload, uint16_t payload_len)
+static uint16_t CommProtocol_SendPacket(uint8_t type, uint16_t seq, uint8_t flags, const uint8_t *payload, uint16_t payload_len)
 {
   uint8_t packet[COMM_TX_BUFFER_SIZE];
   uint16_t crc;
@@ -767,7 +790,7 @@ static void CommProtocol_SendPacket(uint8_t type, uint16_t seq, uint8_t flags, c
   total_len = (uint16_t)(2U + COMM_PROTOCOL_HEADER_SIZE + payload_len + COMM_PROTOCOL_CRC_SIZE);
   if ((payload_len > COMM_PROTOCOL_MAX_PAYLOAD) || (total_len > COMM_TX_BUFFER_SIZE))
   {
-    return;
+    return 0U;
   }
 
   packet[offset++] = COMM_PROTOCOL_SYNC0;
@@ -795,7 +818,7 @@ static void CommProtocol_SendPacket(uint8_t type, uint16_t seq, uint8_t flags, c
   CommProtocol_WriteU16(&packet[offset], crc);
   offset = (uint16_t)(offset + 2U);
 
-  (void)CommTransport_Send(packet, offset);
+  return CommTransport_Send(packet, offset);
 }
 
 static uint16_t CommProtocol_CalcCrc(const uint8_t *data, uint16_t len)
@@ -907,4 +930,5 @@ static void CommProtocol_UpdateWatch(void)
   comm_protocol_watch_commit_error_count = comm_protocol_commit_error_count;
   comm_protocol_watch_timeout_black_count = comm_protocol_timeout_black_count;
   comm_protocol_watch_last_valid_packet_ms = comm_protocol_last_valid_packet_ms;
+  comm_protocol_watch_rc_event_bits = comm_protocol_rc_event_bits;
 }
